@@ -1,0 +1,16 @@
+{
+  "name": "deny_role_deny_wins_over_allowlist",
+  "request": {
+    "role": "implementer",
+    "tool": "gh_pr_create",
+    "manifest": {
+      "roles": {
+        "implementer": {
+          "mediated_tools": ["gh_pr_create"],
+          "deny": ["gh_pr_create"]
+        }
+      }
+    }
+  },
+  "want": {"allow": false, "rule": "role_deny"}
+}

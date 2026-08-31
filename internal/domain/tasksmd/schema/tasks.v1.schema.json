@@ -1,0 +1,75 @@
+{
+  "$id": "https://agentfleet.dev/schemas/tasks/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentFleet tasks.md v1",
+  "description": "Schema for the fenced ```yaml agentfleet-tasks block inside tasks.md (development-plan.md §1's handoff contract). Embedded via go:embed in internal/domain/tasksmd — promoting this to a standalone agentfleet-presets repo is explicitly out of M2 scope; this file's $id is already the eventual URL, so that move is a relocation, not a rewrite.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "tasks"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/task" }
+    }
+  },
+  "$defs": {
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["external_ref", "lane", "title", "intent"],
+      "properties": {
+        "external_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique within this document — task.sql's task_feature_external_ref_uk enforces it at the storage layer too."
+        },
+        "lane": {
+          "type": "string",
+          "enum": ["spec", "direct"]
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "intent": { "type": "string", "minLength": 1 },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "touches": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "depends_on": {
+          "type": "array",
+          "description": "external_refs of other tasks in THIS document; resolved to task uuids at ingest and checked for cycles (a JSON Schema cannot express either check).",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "spec_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/spec_ref" },
+          "default": []
+        }
+      }
+    },
+    "spec_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "anchor": { "type": "string" },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "development-plan.md D8: context passes by hash-pinned reference, never by transcript."
+        }
+      }
+    }
+  }
+}

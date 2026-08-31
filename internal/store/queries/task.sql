@@ -55,3 +55,13 @@ SET state = $2, version = version + 1, updated_at = now(),
     next_event_seq = next_event_seq + 1
 WHERE id = $1
 RETURNING *;
+
+-- name: IncrementTaskAttempt :one
+-- Caught in code review: a task's retry cap must survive across the
+-- several run rows a retried task goes through (each retry gets a BRAND
+-- NEW run, whose own run.attempt starts back at 0) — see
+-- 0002_control_plane.up.sql's sourcing comment on task.attempt.
+-- internal/store.ApplyRunExit calls this under the same GetTaskForUpdate
+-- lock as its own UpdateTaskState call, in the same transaction.
+UPDATE task SET attempt = attempt + 1, updated_at = now() WHERE id = $1
+RETURNING *;

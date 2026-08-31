@@ -1,0 +1,13 @@
+{
+  "name": "deny_unknown_role",
+  "request": {
+    "role": "ghost",
+    "tool": "gh_pr_create",
+    "manifest": {
+      "roles": {
+        "implementer": {"mediated_tools": ["gh_pr_create"]}
+      }
+    }
+  },
+  "want": {"allow": false, "rule": "unknown_role"}
+}

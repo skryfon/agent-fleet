@@ -20,7 +20,7 @@ func renderTaskTable() string {
 		fmt.Fprintf(&b, "%s + %s -> %s [%s]", row.From, row.Trigger, row.To, row.EventKind)
 
 		for _, e := range row.Effects {
-			fmt.Fprintf(&b, " effect(%s, %s)", e.Topic, e.KeyTemplate)
+			fmt.Fprintf(&b, " effect(%s, %s)", e.Topic, e.KeyReason)
 		}
 
 		b.WriteByte('\n')

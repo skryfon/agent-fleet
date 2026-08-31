@@ -1,0 +1,17 @@
+{
+  "name": "allow_arg_rule_not_in_satisfied",
+  "request": {
+    "role": "implementer",
+    "tool": "gh_pr_create",
+    "args": {"base": "feature-x"},
+    "manifest": {
+      "roles": {
+        "implementer": {
+          "mediated_tools": ["gh_pr_create"],
+          "arg_rules": {"gh_pr_create": [{"path": "base", "op": "not_in", "value": "main,master"}]}
+        }
+      }
+    }
+  },
+  "want": {"allow": true}
+}

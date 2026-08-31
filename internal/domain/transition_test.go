@@ -41,7 +41,6 @@ func TestNextTaskGrid(t *testing.T) {
 
 	for _, from := range domain.AllTaskStates() {
 		for _, tr := range allTriggers() {
-			from, tr := from, tr
 			t.Run(string(from)+"/"+string(tr), func(t *testing.T) {
 				wantTo, isLegal := legal[[2]string{string(from), string(tr)}]
 
@@ -102,28 +101,25 @@ func TestNextTaskEveryStateReachableAndNoDeadEnd(t *testing.T) {
 	}
 }
 
-func TestEffectSpecRenderKey(t *testing.T) {
-	spec := domain.EffectSpec{Topic: "run.launch", KeyTemplate: "launch:{{run_id}}"}
-	tc := domain.TransitionContext{RunID: "abc-123"}
-
-	got := spec.RenderKey(tc)
-	if want := "launch:abc-123"; got != want {
-		t.Fatalf("RenderKey() = %q; want %q", got, want)
-	}
-}
-
-func TestEffectSpecRenderKeyIsDeterministic(t *testing.T) {
-	// Same input, same output, forever — this is what makes a retried
-	// transition's outbox key collide with its own earlier attempt instead
-	// of drifting.
-	spec := domain.EffectSpec{Topic: "run.kill", KeyTemplate: "kill:{{run_id}}"}
-	tc := domain.TransitionContext{RunID: "run-9"}
-
-	a := spec.RenderKey(tc)
-	b := spec.RenderKey(tc)
-
-	if a != b {
-		t.Fatalf("RenderKey is not deterministic: %q != %q", a, b)
+// TestEffectsHaveKeyReasonNotEmpty catches the class of bug an earlier
+// version of this table actually had: the initial QUEUED->RUNNING launch
+// effect was keyed by "launch:{{run_id}}", but no run exists yet at that
+// point in the transition (the launch effect is what creates one) — every
+// task's first launch rendered the identical literal key forever, and only
+// the SECOND task to ever start silently failed to enqueue (ON CONFLICT DO
+// NOTHING against the first task's key). Caught by
+// internal/outbox.TestTransitionThenRelayDispatch failing, not by a domain
+// test — this test exists so the domain layer itself would have caught it:
+// every effect must carry a non-empty KeyReason, and internal/store keys it
+// using the transition's own always-fresh event id (never a template
+// substituted from possibly-absent identifiers).
+func TestEffectsHaveKeyReasonNotEmpty(t *testing.T) {
+	for _, row := range domain.TaskTable() {
+		for _, eff := range row.Effects {
+			if eff.KeyReason == "" {
+				t.Errorf("%s+%s effect on topic %q has an empty KeyReason", row.From, row.Trigger, eff.Topic)
+			}
+		}
 	}
 }
 
@@ -139,7 +135,6 @@ func TestNextRunGrid(t *testing.T) {
 
 	for _, from := range domain.AllRunStates() {
 		for _, tr := range runTriggers {
-			from, tr := from, tr
 			t.Run(string(from)+"/"+string(tr), func(t *testing.T) {
 				wantTo, isLegal := legal[[2]string{string(from), string(tr)}]
 

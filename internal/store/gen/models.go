@@ -153,4 +153,5 @@ type Task struct {
 	Version            int32              `json:"version"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 	NextEventSeq       int64              `json:"next_event_seq"`
+	Attempt            int32              `json:"attempt"`
 }

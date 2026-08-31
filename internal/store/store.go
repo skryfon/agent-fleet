@@ -8,7 +8,9 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	db "agentfleet/internal/store/gen"
@@ -24,12 +26,43 @@ type Store struct {
 	q    *db.Queries
 }
 
+// lockTimeout bounds how long a session will wait on a row lock —
+// GetTaskForUpdate/GetRunForUpdate deliberately block on FOR UPDATE to
+// serialize concurrent transitions, but a live-but-hung caller (a goroutine
+// that calls WithTx and never returns, e.g. a bug rather than a crash —
+// Postgres's own crash recovery already handles a killed backend fine)
+// could otherwise hold that lock indefinitely and stall every other request
+// against the same hot task. Flagged in DB review: this was previously
+// unset. statementTimeout is a second, broader backstop for any query that
+// runs unexpectedly long for other reasons.
+const (
+	lockTimeout      = 5 * time.Second
+	statementTimeout = 30 * time.Second
+	// maxConns is a documented starting point, not a load-tested figure —
+	// this pool is shared by internal/api's handlers, internal/outbox.Relay's
+	// workers (4 by default, each polling independently), and
+	// internal/reconcile's sweep. Revisit once cmd/control-plane's actual
+	// concurrency is wired up and there is real traffic to size against
+	// (flagged in DB review as a tracked gap, not urgent to block M2).
+	maxConns = 20
+)
+
 // Open connects to Postgres and returns a Store backed by a connection
 // pool. dsn is a standard postgres:// URL (DATABASE_URL).
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: parsing DATABASE_URL: %w", err)
+	}
+
+	cfg.MaxConns = maxConns
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, fmt.Sprintf(
+			"SET lock_timeout = '%s'; SET statement_timeout = '%s'",
+			lockTimeout, statementTimeout,
+		))
+
+		return err
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

@@ -1,10 +1,20 @@
 // Package redact scrubs secrets out of anything that will be persisted or
 // logged. development-plan.md §8: "Secrets never enter agent context or
 // event payloads — redaction filter applies to every emitted event; test it
-// with a canary string." internal/store.AppendMirror (P3) is the one choke
-// point that calls this package for every event payload it writes — no
-// other code path is permitted to insert an event row, so no path can
-// bypass redaction by construction.
+// with a canary string."
+//
+// internal/store.ApplyTaskTransition/ApplyRunTransition (control-plane-native
+// events) and internal/store.AppendMirror (the dsh session mirror) are the
+// two sanctioned choke points that call this package for every event
+// payload they write. This is enforced by code-review discipline, not the
+// compiler — Go has no way to make internal/store/gen's sqlc-generated
+// AppendMirrorEvents unreachable except through AppendMirror while keeping
+// that package public for sqlc's own generation model — the same posture
+// `event`'s append-only-ness has outside its Postgres trigger: a rule
+// everyone touching this code must know, not one every path is structurally
+// incapable of violating. A new code path that needs to write an event row
+// gets a new *exported* internal/store method that also redacts; it never
+// calls the generated query directly.
 package redact
 
 import (
@@ -29,6 +39,16 @@ const mask = "[REDACTED]"
 // the secrets most likely to show up mid-string. Trailing \b is kept: it
 // only needs to stop the match at the end of the token's own alphanumeric
 // run, where a false negative is not a concern.
+//
+// This set is deliberately NOT exhaustive: an unprefixed, low-structure
+// secret (a Zulip bot API key, a plain shared secret) has no distinctive
+// shape a regex can key on without an unacceptable false-positive rate.
+// Those are caught only via the literal list (New/FromEnv/WithLiterals) —
+// every known deployment secret (GH_TOKEN, OMNI_ROUTE_API_KEY,
+// ZULIP_BOT_API_KEY, the per-run bearer token, ...) must be registered as a
+// literal at the call site; this pattern set is a second line for the
+// *unknown* case (a stray key pasted into a commit message, a leaked
+// third-party token), not the primary defense.
 var builtinPatterns = []*regexp.Regexp{
 	// GitHub tokens: personal access (classic ghp_, fine-grained
 	// github_pat_), OAuth (gho_), server-to-server (ghs_).

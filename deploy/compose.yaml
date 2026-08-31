@@ -64,6 +64,8 @@ services:
     environment:
       CONTROL_PLANE_ADDR: ":8080"
       DATABASE_URL: postgres://agentfleet:agentfleet@postgres:5432/agentfleet?sslmode=disable
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      SUPERVISOR_SECRET: ${SUPERVISOR_SECRET}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

@@ -1,0 +1,13 @@
+{
+  "name": "deny_not_allow_listed",
+  "request": {
+    "role": "implementer",
+    "tool": "spawn_worker",
+    "manifest": {
+      "roles": {
+        "implementer": {"mediated_tools": ["gh_pr_create"]}
+      }
+    }
+  },
+  "want": {"allow": false, "rule": "not_allow_listed"}
+}

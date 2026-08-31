@@ -11,6 +11,14 @@ ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
 RETURNING *;
 
 -- name: AppendMirrorEvents :execrows
+-- DO NOT CALL DIRECTLY outside internal/store.AppendMirror — this raw
+-- generated query writes s.payload with NO redaction. internal/store.AppendMirror
+-- is the sanctioned entry point: it redacts every payload first
+-- (development-plan.md §8, internal/redact's package doc). A caller that
+-- bypasses AppendMirror and calls this generated method directly writes
+-- unredacted agent tool-call/result payloads into a durable, queryable
+-- table — verified as a real gap during Go code review, not hypothetical.
+--
 -- The idempotent dsh-session mirror (docs/adr/0001). ON CONFLICT DO NOTHING
 -- against event_dsh_seq_uk (run_id, seq) WHERE source='dsh' is what makes a
 -- replayed af-control batch, after a crash or reconnect, a no-op. seq is
@@ -38,9 +46,15 @@ SELECT COALESCE(MAX(seq), -1)::bigint AS high_water_seq
 FROM event WHERE run_id = sqlc.arg(run_id)::uuid AND source = 'dsh';
 
 -- name: ListEventsSince :many
--- GET /v1/events?since= (SSE, P4). (at, id) is the total read order —
--- event_at_id_idx.
-SELECT * FROM event WHERE at > $1 ORDER BY at, id LIMIT $2;
+-- GET /v1/events?since= (SSE, P4). Cursor is the full (at, id) pair, not
+-- just at: at alone ties whenever two events share a timestamp (plausible —
+-- Postgres now() has microsecond but not guaranteed-unique resolution
+-- across concurrent transactions), and an at-only cursor sitting exactly on
+-- that tie would silently drop whichever of the tied rows LIMIT cuts off
+-- this batch — a real gap in "complete event trail," not a hypothetical
+-- one. (at, id) is event_at_id_idx's own order, so this is an index-range
+-- scan, not a filter-then-sort.
+SELECT * FROM event WHERE (at, id) > (sqlc.arg(since_at)::timestamptz, sqlc.arg(since_id)::bigint) ORDER BY at, id LIMIT $3;
 
 -- name: ListEventsByTask :many
 -- event.task_id is nullable (an event can be scoped to a run only); the

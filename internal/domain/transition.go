@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"strings"
 )
 
 // ErrIllegalTransition is returned by NextTask/NextRun when (From, Trigger)
@@ -20,22 +19,32 @@ type EffectSpec struct {
 	// Topic is the outbox row's topic; the relay dispatches by exact match
 	// (internal/outbox.Relay.Handle).
 	Topic string
-	// KeyTemplate renders the outbox row's idempotency key. "{{run_id}}" and
-	// "{{task_id}}" are substituted from TransitionContext by RenderKey.
-	// A transition retried after a crash re-derives the identical key, so
-	// the outbox's ON CONFLICT (key) ... DO NOTHING makes re-enqueueing a
-	// no-op — see 0002_control_plane.up.sql's outbox_key_uk comment.
-	KeyTemplate string
-}
-
-// RenderKey substitutes TransitionContext fields into a KeyTemplate.
-func (e EffectSpec) RenderKey(tc TransitionContext) string {
-	key := e.KeyTemplate
-	key = strings.ReplaceAll(key, "{{run_id}}", tc.RunID)
-	key = strings.ReplaceAll(key, "{{task_id}}", tc.TaskID)
-	key = strings.ReplaceAll(key, "{{question_id}}", tc.QuestionID)
-
-	return key
+	// KeyReason is a fixed, human-readable label ("launch", "kill",
+	// "resume", "review", "failed", "question") — NOT a template. The
+	// outbox row's actual idempotency key is KeyReason + the just-inserted
+	// transition event's own id (internal/store composes it, after the
+	// INSERT that allocates that id).
+	//
+	// This is deliberately NOT keyed by run_id/task_id/question_id: at the
+	// very first launch (QUEUED->RUNNING), no run row exists yet — the
+	// launch effect is what creates one — so a "{{run_id}}"-shaped template
+	// has nothing to substitute and every task's first launch would render
+	// the identical literal key forever (verified live: this was a real bug,
+	// caught by TestTransitionThenRelayDispatch failing on exactly this).
+	// The event's own id is always fresh and always available at the right
+	// instant (same transaction, right after InsertControlPlaneEvent), so
+	// it needs no such reasoning about what happens to exist yet.
+	//
+	// This does NOT weaken re-enqueue idempotency: ApplyTaskTransition's
+	// atomicity already guarantees the event and its effects land together
+	// or not at all, and a genuinely retried caller (e.g. an HTTP client
+	// retrying a timed-out POST) fails at the domain.NextTask state check
+	// before ever reaching the effect-enqueue step — the FROM state has
+	// already moved on. internal/reconcile's OWN re-enqueue of an existing
+	// stalled run (P8) is a separate code path with its own explicit key
+	// (e.g. keyed by run_id, which by then genuinely exists) — it does not
+	// go through this struct at all.
+	KeyReason string
 }
 
 // TaskTransition is one row of the task state machine.
@@ -47,10 +56,14 @@ type TaskTransition struct {
 	Effects   []EffectSpec
 }
 
-// TransitionContext carries the identifiers and payload a transition needs
-// to render effect keys and event payloads. It carries no IO handles, no
-// clock, and no randomness — NextTask/NextRun stay pure functions of their
-// arguments.
+// TransitionContext carries request-scoped identifiers and payload for a
+// transition. NextTask/NextRun themselves no longer read TaskID/RunID/
+// QuestionID (effect keys are event-id-based now — see EffectSpec.KeyReason
+// — not rendered from these), but internal/store still populates them here
+// so a future audit-payload enhancement has them available without an API
+// change, and so the struct remains the one place a caller assembles
+// everything it knows about a transition. Carries no IO handles, no clock,
+// no randomness — NextTask/NextRun stay pure functions of their arguments.
 type TransitionContext struct {
 	TaskID     string
 	RunID      string
@@ -95,11 +108,12 @@ func eventPayload(tc TransitionContext) map[string]any {
 	return payload
 }
 
-// PendingEffect is a rendered EffectSpec, ready for internal/store to insert
-// as an outbox row.
+// PendingEffect is one effect a transition scheduled, ready for
+// internal/store to key (using the transition's event id — see
+// EffectSpec.KeyReason) and insert as an outbox row.
 type PendingEffect struct {
-	Topic string
-	Key   string
+	Topic     string
+	KeyReason string
 }
 
 // Outcome is what a legal transition produces: the new state plus the event
@@ -132,7 +146,7 @@ var taskTable = []TaskTransition{
 	{
 		From: TaskQueued, Trigger: TrStart, To: TaskRunning,
 		EventKind: "task_started",
-		Effects:   []EffectSpec{{Topic: "run.launch", KeyTemplate: "launch:{{run_id}}"}},
+		Effects:   []EffectSpec{{Topic: "run.launch", KeyReason: "launch"}},
 	},
 	{
 		From: TaskQueued, Trigger: TrCancel, To: TaskCancelled,
@@ -141,7 +155,7 @@ var taskTable = []TaskTransition{
 	{
 		From: TaskRunning, Trigger: TrRunExitedOK, To: TaskReview,
 		EventKind: "task_in_review",
-		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyTemplate: "review:{{task_id}}"}},
+		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyReason: "review"}},
 	},
 	{
 		// The QUEUED<-RUNNING loop-back the §3 diagram draws: a run that
@@ -161,27 +175,27 @@ var taskTable = []TaskTransition{
 		// from FAILED).
 		From: TaskRunning, Trigger: TrRunExitedErrFinal, To: TaskFailed,
 		EventKind: "task_failed",
-		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyTemplate: "failed:{{task_id}}"}},
+		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyReason: "failed"}},
 	},
 	{
 		From: TaskRunning, Trigger: TrAsked, To: TaskBlockedOnHuman,
 		EventKind: "task_blocked",
-		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyTemplate: "question:{{question_id}}"}},
+		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyReason: "question"}},
 	},
 	{
 		From: TaskBlockedOnHuman, Trigger: TrAnswered, To: TaskRunning,
 		EventKind: "task_unblocked",
-		Effects:   []EffectSpec{{Topic: "run.launch", KeyTemplate: "resume:{{run_id}}"}},
+		Effects:   []EffectSpec{{Topic: "run.launch", KeyReason: "resume"}},
 	},
 	{
 		From: TaskRunning, Trigger: TrCancel, To: TaskCancelled,
 		EventKind: "task_cancelled",
-		Effects:   []EffectSpec{{Topic: "run.kill", KeyTemplate: "kill:{{run_id}}"}},
+		Effects:   []EffectSpec{{Topic: "run.kill", KeyReason: "kill"}},
 	},
 	{
 		From: TaskBlockedOnHuman, Trigger: TrCancel, To: TaskCancelled,
 		EventKind: "task_cancelled",
-		Effects:   []EffectSpec{{Topic: "run.kill", KeyTemplate: "kill:{{run_id}}"}},
+		Effects:   []EffectSpec{{Topic: "run.kill", KeyReason: "kill"}},
 	},
 	{
 		From: TaskRunning, Trigger: TrPark, To: TaskParked,
@@ -220,7 +234,7 @@ func NextTask(from TaskState, tr Trigger, tc TransitionContext) (Outcome, error)
 
 		effects := make([]PendingEffect, 0, len(row.Effects))
 		for _, spec := range row.Effects {
-			effects = append(effects, PendingEffect{Topic: spec.Topic, Key: spec.RenderKey(tc)})
+			effects = append(effects, PendingEffect{Topic: spec.Topic, KeyReason: spec.KeyReason})
 		}
 
 		return Outcome{

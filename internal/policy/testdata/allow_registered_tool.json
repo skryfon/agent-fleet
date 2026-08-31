@@ -1,0 +1,14 @@
+{
+  "name": "allow_registered_tool",
+  "request": {
+    "role": "implementer",
+    "tool": "gh_pr_create",
+    "args": {"title": "x"},
+    "manifest": {
+      "roles": {
+        "implementer": {"mediated_tools": ["gh_pr_create", "spawn_worker"]}
+      }
+    }
+  },
+  "want": {"allow": true}
+}

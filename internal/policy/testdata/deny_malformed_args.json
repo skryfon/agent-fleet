@@ -1,0 +1,17 @@
+{
+  "name": "deny_malformed_args",
+  "request": {
+    "role": "implementer",
+    "tool": "gh_pr_create",
+    "raw_args": "not-json",
+    "manifest": {
+      "roles": {
+        "implementer": {
+          "mediated_tools": ["gh_pr_create"],
+          "arg_rules": {"gh_pr_create": [{"path": "base", "op": "not_in", "value": "main,master"}]}
+        }
+      }
+    }
+  },
+  "want": {"allow": false, "rule": "malformed_args"}
+}

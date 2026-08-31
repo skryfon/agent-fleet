@@ -209,10 +209,21 @@ CREATE INDEX outbox_claimable_idx ON outbox (available_at, id)
 -- 5. Optimistic concurrency + run/task bookkeeping.
 -- ============================================================
 
+-- DECISION — attempt lives on task, not run, even though run already has
+-- its own attempt column below. Caught in code review: a retry
+-- (TrRunExitedErrRetryable) requeues the task and its NEXT attempt gets a
+-- BRAND NEW run row (a fresh uuid, run.attempt starting back at its column
+-- default 0) — internal/reconcile/P5's run.launch handler is what will
+-- create that row. A retry cap read from run.attempt would therefore never
+-- advance past 0 across the retries it exists to cap, silently defeating
+-- maxRunAttempts the moment P5 starts creating real run rows. task.attempt
+-- survives across every run a task goes through, which is what "cap total
+-- retries for this task" actually requires.
 ALTER TABLE task
     ADD COLUMN version        integer     NOT NULL DEFAULT 0,
     ADD COLUMN updated_at     timestamptz NOT NULL DEFAULT now(),
-    ADD COLUMN next_event_seq bigint      NOT NULL DEFAULT 0;
+    ADD COLUMN next_event_seq bigint      NOT NULL DEFAULT 0,
+    ADD COLUMN attempt        integer     NOT NULL DEFAULT 0;
 
 ALTER TABLE run
     ADD COLUMN version           integer     NOT NULL DEFAULT 0,
@@ -226,6 +237,18 @@ ALTER TABLE run
     ADD COLUMN last_heartbeat_at timestamptz,
     ADD COLUMN attempt           integer     NOT NULL DEFAULT 0,
     ADD COLUMN exit_code         integer;
+
+-- task rows accumulate forever (no purge path), and internal/store/queries/
+-- task.sql's ListTasksByState is exactly the query a scheduler polls
+-- repeatedly — a sequential scan of the whole task history on every poll
+-- without this. Caught in DB review; every other hot query in this
+-- migration already got a deliberate index, this one was an oversight.
+CREATE INDEX task_state_created_idx ON task (state, created_at);
+
+-- question.run_id was an unindexed foreign key: GET /v1/runs/{id}/inbox's
+-- ListOpenQuestionsByRun (internal/store/queries/question.sql) is on every
+-- long-poll's hot path. Caught in DB review alongside the task index above.
+CREATE INDEX question_run_state_idx ON question (run_id, state);
 
 -- ============================================================
 -- 6. Ingestion idempotency: external_ref is the tasks.md-side identity a

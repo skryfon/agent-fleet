@@ -51,3 +51,13 @@ UPDATE run SET last_heartbeat_at = now() WHERE id = $1;
 -- name: IncrementRunAttempt :one
 UPDATE run SET attempt = attempt + 1, updated_at = now() WHERE id = $1
 RETURNING *;
+
+-- name: IncrementRunEventSeq :one
+-- Bumps next_event_seq (under the row lock the caller already holds via
+-- GetRunForUpdate) without touching run.state — internal/store.RecordEvent
+-- uses this for control-plane events that accompany no state transition
+-- (e.g. a mediated tool-dispatch policy decision), so seq allocation stays
+-- race-free the same way ApplyRunTransition/ApplyTaskTransition's is, without
+-- forcing every event to pretend to be a state change.
+UPDATE run SET next_event_seq = next_event_seq + 1, updated_at = now() WHERE id = $1
+RETURNING *;

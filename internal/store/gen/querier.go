@@ -13,6 +13,14 @@ import (
 
 type Querier interface {
 	AnswerQuestion(ctx context.Context, arg AnswerQuestionParams) (Question, error)
+	// DO NOT CALL DIRECTLY outside internal/store.AppendMirror — this raw
+	// generated query writes s.payload with NO redaction. internal/store.AppendMirror
+	// is the sanctioned entry point: it redacts every payload first
+	// (development-plan.md §8, internal/redact's package doc). A caller that
+	// bypasses AppendMirror and calls this generated method directly writes
+	// unredacted agent tool-call/result payloads into a durable, queryable
+	// table — verified as a real gap during Go code review, not hypothetical.
+	//
 	// The idempotent dsh-session mirror (docs/adr/0001). ON CONFLICT DO NOTHING
 	// against event_dsh_seq_uk (run_id, seq) WHERE source='dsh' is what makes a
 	// replayed af-control batch, after a crash or reconnect, a no-op. seq is
@@ -63,6 +71,20 @@ type Querier interface {
 	// against the same task serialize instead of racing.
 	GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, error)
 	IncrementRunAttempt(ctx context.Context, id uuid.UUID) (Run, error)
+	// Bumps next_event_seq (under the row lock the caller already holds via
+	// GetRunForUpdate) without touching run.state — internal/store.RecordEvent
+	// uses this for control-plane events that accompany no state transition
+	// (e.g. a mediated tool-dispatch policy decision), so seq allocation stays
+	// race-free the same way ApplyRunTransition/ApplyTaskTransition's is, without
+	// forcing every event to pretend to be a state change.
+	IncrementRunEventSeq(ctx context.Context, id uuid.UUID) (Run, error)
+	// Caught in code review: a task's retry cap must survive across the
+	// several run rows a retried task goes through (each retry gets a BRAND
+	// NEW run, whose own run.attempt starts back at 0) — see
+	// 0002_control_plane.up.sql's sourcing comment on task.attempt.
+	// internal/store.ApplyRunExit calls this under the same GetTaskForUpdate
+	// lock as its own UpdateTaskState call, in the same transaction.
+	IncrementTaskAttempt(ctx context.Context, id uuid.UUID) (Task, error)
 	// The only place source='control_plane' events are written — always inside
 	// the same transaction as the state UPDATE and outbox INSERTs it accompanies
 	// (internal/store.ApplyTaskTransition, P3). seq comes from the caller, which
@@ -88,8 +110,14 @@ type Querier interface {
 	// explicit. The column itself stays a plain uuid.UUID in the RETURNING/
 	// SELECT * results either way; this only affects the query's own argument.
 	ListEventsByTask(ctx context.Context, taskID uuid.UUID) ([]Event, error)
-	// GET /v1/events?since= (SSE, P4). (at, id) is the total read order —
-	// event_at_id_idx.
+	// GET /v1/events?since= (SSE, P4). Cursor is the full (at, id) pair, not
+	// just at: at alone ties whenever two events share a timestamp (plausible —
+	// Postgres now() has microsecond but not guaranteed-unique resolution
+	// across concurrent transactions), and an at-only cursor sitting exactly on
+	// that tie would silently drop whichever of the tied rows LIMIT cuts off
+	// this batch — a real gap in "complete event trail," not a hypothetical
+	// one. (at, id) is event_at_id_idx's own order, so this is an index-range
+	// scan, not a filter-then-sort.
 	ListEventsSince(ctx context.Context, arg ListEventsSinceParams) ([]Event, error)
 	ListFeaturesByProject(ctx context.Context, projectID uuid.UUID) ([]Feature, error)
 	// The inbox long-poll (GET /v1/runs/{id}/inbox, P4) reads this to build the

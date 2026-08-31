@@ -1,0 +1,13 @@
+{
+  "name": "deny_hard_deny_gh_pr_merge",
+  "request": {
+    "role": "implementer",
+    "tool": "gh_pr_merge",
+    "manifest": {
+      "roles": {
+        "implementer": {"mediated_tools": ["gh_pr_merge"]}
+      }
+    }
+  },
+  "want": {"allow": false, "rule": "hard_deny"}
+}

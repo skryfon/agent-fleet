@@ -68,19 +68,33 @@ type Config struct {
 	BaseBackoff  time.Duration
 	MaxBackoff   time.Duration
 	MaxAttempts  int32
+	// HandlerTimeout bounds one handler invocation. It MUST be comfortably
+	// shorter than the claim lease (internal/store/queries/outbox.sql's
+	// ClaimOutboxBatch bumps available_at by a fixed 30s, never renewed
+	// while a handler runs) — a handler that outlives the lease risks a
+	// second worker (this process, or a second control-plane instance
+	// racing a restart) reclaiming and re-dispatching the SAME row while
+	// the first invocation is still in flight: a genuine concurrent
+	// double-dispatch, not merely a retry-after-failure. Flagged in DB
+	// review: a slow run.launch (cold image pull) or zulip.notify call had
+	// no bound at all before this field existed.
+	HandlerTimeout time.Duration
 }
 
 // DefaultConfig matches the values docs/adr/0010's ~30-minute retry budget
 // before poisoning (MaxAttempts * an exponential ramp capped at MaxBackoff)
-// was sized against.
+// was sized against. HandlerTimeout (20s) stays under ClaimOutboxBatch's
+// fixed 30s lease with headroom for network jitter between claim and
+// handler start.
 func DefaultConfig() Config {
 	return Config{
-		Workers:      4,
-		BatchSize:    32,
-		PollInterval: 250 * time.Millisecond,
-		BaseBackoff:  time.Second,
-		MaxBackoff:   5 * time.Minute,
-		MaxAttempts:  12,
+		Workers:        4,
+		BatchSize:      32,
+		PollInterval:   250 * time.Millisecond,
+		BaseBackoff:    time.Second,
+		MaxBackoff:     5 * time.Minute,
+		MaxAttempts:    12,
+		HandlerTimeout: 20 * time.Second,
 	}
 }
 
@@ -120,6 +134,10 @@ func NewRelay(store Store, cfg Config, log *slog.Logger) *Relay {
 
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = def.MaxAttempts
+	}
+
+	if cfg.HandlerTimeout <= 0 {
+		cfg.HandlerTimeout = def.HandlerTimeout
 	}
 
 	if log == nil {
@@ -167,6 +185,13 @@ func (r *Relay) workerLoop(ctx context.Context) error {
 	}
 }
 
+// claimAndDispatchBatch dispatches every row in one claimed batch
+// SEQUENTIALLY within this worker — Config.Workers controls how many
+// independent claim/poll loops run (that's where the real concurrency is,
+// verified by TestRelayEachKeyObservedExactlyOnce's 8-worker/50-row case),
+// not how many messages one worker handles in parallel. A batch of N rows
+// on one worker takes roughly N * (one handler's latency), bounded by
+// HandlerTimeout per row.
 func (r *Relay) claimAndDispatchBatch(ctx context.Context) error {
 	rows, err := r.store.ClaimBatch(ctx, int32(r.cfg.BatchSize))
 	if err != nil {
@@ -200,7 +225,10 @@ func (r *Relay) dispatchOne(ctx context.Context, row db.Outbox) {
 		return
 	}
 
-	err := handler(ctx, msg)
+	hctx, cancel := context.WithTimeout(ctx, r.cfg.HandlerTimeout)
+	defer cancel()
+
+	err := handler(hctx, msg)
 
 	switch {
 	case err == nil:

@@ -14,6 +14,9 @@ DROP INDEX run_active_per_task_uk;
 DROP INDEX task_feature_external_ref_uk;
 
 -- 5.
+DROP INDEX question_run_state_idx;
+DROP INDEX task_state_created_idx;
+
 ALTER TABLE run
     DROP COLUMN exit_code,
     DROP COLUMN attempt,
@@ -24,6 +27,7 @@ ALTER TABLE run
     DROP COLUMN version;
 
 ALTER TABLE task
+    DROP COLUMN attempt,
     DROP COLUMN next_event_seq,
     DROP COLUMN updated_at,
     DROP COLUMN version;
@@ -31,6 +35,11 @@ ALTER TABLE task
 -- 4.
 DROP INDEX outbox_claimable_idx;
 CREATE INDEX outbox_unpublished_idx ON outbox (id) WHERE published_at IS NULL;
+
+-- outbox_key_uk would also disappear implicitly once `key` is dropped below
+-- (Postgres auto-drops an index when its column goes) — explicit here so
+-- the down script doesn't rely on a reader knowing that.
+DROP INDEX outbox_key_uk;
 
 ALTER TABLE outbox
     DROP COLUMN created_at,

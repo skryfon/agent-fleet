@@ -1,13 +1,13 @@
 CREATED + ingested -> QUEUED [task_queued]
-QUEUED + start -> RUNNING [task_started] effect(run.launch, launch:{{run_id}})
+QUEUED + start -> RUNNING [task_started] effect(run.launch, launch)
 QUEUED + cancel -> CANCELLED [task_cancelled]
-RUNNING + run_exited_ok -> REVIEW [task_in_review] effect(zulip.notify, review:{{task_id}})
+RUNNING + run_exited_ok -> REVIEW [task_in_review] effect(zulip.notify, review)
 RUNNING + run_exited_err_retryable -> QUEUED [task_requeued]
-RUNNING + run_exited_err_final -> FAILED [task_failed] effect(zulip.notify, failed:{{task_id}})
-RUNNING + asked -> BLOCKED_ON_HUMAN [task_blocked] effect(zulip.notify, question:{{question_id}})
-BLOCKED_ON_HUMAN + answered -> RUNNING [task_unblocked] effect(run.launch, resume:{{run_id}})
-RUNNING + cancel -> CANCELLED [task_cancelled] effect(run.kill, kill:{{run_id}})
-BLOCKED_ON_HUMAN + cancel -> CANCELLED [task_cancelled] effect(run.kill, kill:{{run_id}})
+RUNNING + run_exited_err_final -> FAILED [task_failed] effect(zulip.notify, failed)
+RUNNING + asked -> BLOCKED_ON_HUMAN [task_blocked] effect(zulip.notify, question)
+BLOCKED_ON_HUMAN + answered -> RUNNING [task_unblocked] effect(run.launch, resume)
+RUNNING + cancel -> CANCELLED [task_cancelled] effect(run.kill, kill)
+BLOCKED_ON_HUMAN + cancel -> CANCELLED [task_cancelled] effect(run.kill, kill)
 RUNNING + park -> PARKED [task_parked]
 BLOCKED_ON_HUMAN + park -> PARKED [task_parked]
 REVIEW + approved -> DONE [task_done]

@@ -12,7 +12,7 @@ import (
 )
 
 const getTaskByFeatureExternalRef = `-- name: GetTaskByFeatureExternalRef :one
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq FROM task WHERE feature_id = $1 AND external_ref = $2
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE feature_id = $1 AND external_ref = $2
 `
 
 type GetTaskByFeatureExternalRefParams struct {
@@ -40,12 +40,13 @@ func (q *Queries) GetTaskByFeatureExternalRef(ctx context.Context, arg GetTaskBy
 		&i.Version,
 		&i.UpdatedAt,
 		&i.NextEventSeq,
+		&i.Attempt,
 	)
 	return i, err
 }
 
 const getTaskByID = `-- name: GetTaskByID :one
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq FROM task WHERE id = $1
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE id = $1
 `
 
 func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
@@ -68,12 +69,13 @@ func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 		&i.Version,
 		&i.UpdatedAt,
 		&i.NextEventSeq,
+		&i.Attempt,
 	)
 	return i, err
 }
 
 const getTaskForUpdate = `-- name: GetTaskForUpdate :one
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq FROM task WHERE id = $1 FOR UPDATE
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE id = $1 FOR UPDATE
 `
 
 // Locks the row for the duration of the caller's transaction — the first
@@ -99,6 +101,43 @@ func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, err
 		&i.Version,
 		&i.UpdatedAt,
 		&i.NextEventSeq,
+		&i.Attempt,
+	)
+	return i, err
+}
+
+const incrementTaskAttempt = `-- name: IncrementTaskAttempt :one
+UPDATE task SET attempt = attempt + 1, updated_at = now() WHERE id = $1
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
+`
+
+// Caught in code review: a task's retry cap must survive across the
+// several run rows a retried task goes through (each retry gets a BRAND
+// NEW run, whose own run.attempt starts back at 0) — see
+// 0002_control_plane.up.sql's sourcing comment on task.attempt.
+// internal/store.ApplyRunExit calls this under the same GetTaskForUpdate
+// lock as its own UpdateTaskState call, in the same transaction.
+func (q *Queries) IncrementTaskAttempt(ctx context.Context, id uuid.UUID) (Task, error) {
+	row := q.db.QueryRow(ctx, incrementTaskAttempt, id)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.FeatureID,
+		&i.ExternalRef,
+		&i.Lane,
+		&i.Title,
+		&i.Intent,
+		&i.AcceptanceCriteria,
+		&i.Touches,
+		&i.DependsOn,
+		&i.SpecRefs,
+		&i.State,
+		&i.Assignee,
+		&i.CreatedAt,
+		&i.Version,
+		&i.UpdatedAt,
+		&i.NextEventSeq,
+		&i.Attempt,
 	)
 	return i, err
 }
@@ -107,7 +146,7 @@ const insertTask = `-- name: InsertTask :one
 INSERT INTO task (feature_id, external_ref, lane, title, intent,
                    acceptance_criteria, touches, depends_on, spec_refs, state)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
 `
 
 type InsertTaskParams struct {
@@ -156,12 +195,13 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.Version,
 		&i.UpdatedAt,
 		&i.NextEventSeq,
+		&i.Attempt,
 	)
 	return i, err
 }
 
 const listTasksByFeature = `-- name: ListTasksByFeature :many
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq FROM task WHERE feature_id = $1 ORDER BY created_at
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE feature_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error) {
@@ -190,6 +230,7 @@ func (q *Queries) ListTasksByFeature(ctx context.Context, featureID uuid.UUID) (
 			&i.Version,
 			&i.UpdatedAt,
 			&i.NextEventSeq,
+			&i.Attempt,
 		); err != nil {
 			return nil, err
 		}
@@ -202,7 +243,7 @@ func (q *Queries) ListTasksByFeature(ctx context.Context, featureID uuid.UUID) (
 }
 
 const listTasksByState = `-- name: ListTasksByState :many
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq FROM task WHERE state = $1 ORDER BY created_at
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE state = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListTasksByState(ctx context.Context, state string) ([]Task, error) {
@@ -231,6 +272,7 @@ func (q *Queries) ListTasksByState(ctx context.Context, state string) ([]Task, e
 			&i.Version,
 			&i.UpdatedAt,
 			&i.NextEventSeq,
+			&i.Attempt,
 		); err != nil {
 			return nil, err
 		}
@@ -247,7 +289,7 @@ UPDATE task
 SET state = $2, version = version + 1, updated_at = now(),
     next_event_seq = next_event_seq + 1
 WHERE id = $1
-RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
 `
 
 type UpdateTaskStateParams struct {
@@ -279,6 +321,7 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.Version,
 		&i.UpdatedAt,
 		&i.NextEventSeq,
+		&i.Attempt,
 	)
 	return i, err
 }
@@ -297,7 +340,7 @@ DO UPDATE SET
     depends_on = EXCLUDED.depends_on,
     spec_refs = EXCLUDED.spec_refs,
     updated_at = now()
-RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
 `
 
 type UpsertTaskByExternalRefParams struct {
@@ -349,6 +392,7 @@ func (q *Queries) UpsertTaskByExternalRef(ctx context.Context, arg UpsertTaskByE
 		&i.Version,
 		&i.UpdatedAt,
 		&i.NextEventSeq,
+		&i.Attempt,
 	)
 	return i, err
 }

@@ -212,6 +212,75 @@ func TestTransitionThenRelayDispatch(t *testing.T) {
 	}
 }
 
+// TestMultipleTaskStartsDoNotCollideOnOutboxKey is the direct regression
+// test for a real bug this session caught live: the QUEUED->RUNNING launch
+// effect was originally keyed by "launch:{{run_id}}", but no run exists yet
+// at that point (the launch effect is what creates one) — every task's
+// FIRST launch rendered the identical literal key "launch:" (empty
+// substitution) forever, so only the first task to ever start actually got
+// a run.launch effect; every subsequent task silently got none
+// (ON CONFLICT (key) DO NOTHING against the first task's key,
+// outbox_key_uk having no expiry). Fixed by keying effects from the
+// transition's own event id (see domain.EffectSpec.KeyReason) instead of a
+// template. This test starts three independent tasks and asserts each gets
+// its own outbox row.
+func TestMultipleTaskStartsDoNotCollideOnOutboxKey(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	r := redact.New(nil, nil)
+
+	suffix := uuid.NewString()
+
+	proj, err := s.Q().CreateProject(ctx, db.CreateProjectParams{
+		Slug: "ob-it-multi-" + suffix, ManifestRef: "r", ManifestHash: "h", Repos: []string{}, Status: "ACTIVE",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	feat, err := s.Q().CreateFeature(ctx, db.CreateFeatureParams{
+		ProjectID: proj.ID, Slug: "f-" + suffix, State: "OPEN",
+	})
+	if err != nil {
+		t.Fatalf("CreateFeature: %v", err)
+	}
+
+	seenOutboxIDs := make(map[int64]bool)
+
+	for i := range 3 {
+		task, err := s.Q().InsertTask(ctx, db.InsertTaskParams{
+			FeatureID: feat.ID, Lane: "direct", Title: "t", Intent: "i",
+			AcceptanceCriteria: []byte(`[]`), Touches: []string{}, DependsOn: []uuid.UUID{},
+			SpecRefs: []byte(`[]`), State: "QUEUED",
+		})
+		if err != nil {
+			t.Fatalf("InsertTask %d: %v", i, err)
+		}
+
+		result, err := s.ApplyTaskTransition(ctx, r, store.TransitionRequest{
+			TaskID: task.ID, Trigger: domain.TrStart, Actor: "test",
+		})
+		if err != nil {
+			t.Fatalf("ApplyTaskTransition %d: %v", i, err)
+		}
+
+		if len(result.OutboxIDs) != 1 {
+			t.Fatalf("task %d: got %d outbox effects, want 1 — this is the exact bug: task %d's launch silently collided with an earlier task's key", i, len(result.OutboxIDs), i)
+		}
+
+		id := result.OutboxIDs[0]
+		if seenOutboxIDs[id] {
+			t.Fatalf("task %d: outbox id %d was already used by an earlier task", i, id)
+		}
+
+		seenOutboxIDs[id] = true
+	}
+
+	if len(seenOutboxIDs) != 3 {
+		t.Fatalf("got %d distinct outbox rows for 3 task starts, want 3", len(seenOutboxIDs))
+	}
+}
+
 // TestApplyTaskTransitionRejectsIllegalTransition proves
 // domain.ErrIllegalTransition survives Store.WithTx's passthrough intact,
 // so an internal/api handler (P4) can errors.Is against it to render a 409

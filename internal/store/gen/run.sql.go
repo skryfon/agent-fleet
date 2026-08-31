@@ -151,6 +151,47 @@ func (q *Queries) IncrementRunAttempt(ctx context.Context, id uuid.UUID) (Run, e
 	return i, err
 }
 
+const incrementRunEventSeq = `-- name: IncrementRunEventSeq :one
+UPDATE run SET next_event_seq = next_event_seq + 1, updated_at = now() WHERE id = $1
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+`
+
+// Bumps next_event_seq (under the row lock the caller already holds via
+// GetRunForUpdate) without touching run.state — internal/store.RecordEvent
+// uses this for control-plane events that accompany no state transition
+// (e.g. a mediated tool-dispatch policy decision), so seq allocation stays
+// race-free the same way ApplyRunTransition/ApplyTaskTransition's is, without
+// forcing every event to pretend to be a state change.
+func (q *Queries) IncrementRunEventSeq(ctx context.Context, id uuid.UUID) (Run, error) {
+	row := q.db.QueryRow(ctx, incrementRunEventSeq, id)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.ParentRunID,
+		&i.Role,
+		&i.Model,
+		&i.ContainerID,
+		&i.DshSessionID,
+		&i.State,
+		&i.Checkpoint,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.TokensIn,
+		&i.TokensOut,
+		&i.CostUsd,
+		&i.CreatedAt,
+		&i.Version,
+		&i.UpdatedAt,
+		&i.NextEventSeq,
+		&i.TokenHash,
+		&i.LastHeartbeatAt,
+		&i.Attempt,
+		&i.ExitCode,
+	)
+	return i, err
+}
+
 const insertRun = `-- name: InsertRun :one
 INSERT INTO run (task_id, parent_run_id, role, model, state, token_hash)
 VALUES ($1, $2, $3, $4, $5, $6)
