@@ -1,0 +1,10 @@
+# Local-HTTP only. TLS is bootstrap step 2 on the real machine
+# (development-plan.md §8), not a laptop concern.
+:80 {
+	handle /healthz {
+		reverse_proxy control-plane:8080
+	}
+	handle {
+		respond "agentfleet: webapp lands in M7" 200
+	}
+}

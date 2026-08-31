@@ -38,7 +38,7 @@ headless runner bundle. Where they diverged, this version picks explicitly:
 | D1 | Postgres owns cross-run lifecycle state. The dsh session log owns model-visible context within a run and is the byte-authoritative source for that run. A one-way, idempotent mirror copies durable dsh session events into Postgres for cross-run audit and search — it is derived data, never a second source of truth. |
 | D2 | One container per Run, one git worktree per Run. |
 | D3 | Agents cannot merge PRs. Enforced at four layers; branch protection is the one that actually works. |
-| D4 | Zulip, self-hosted, free tier (≤10 users). One topic per **feature**. Primary human channel from M0/M3. |
+| D4 | Zulip Cloud (hosted), free tier. One topic per **feature**. Primary human channel from M0/M3. Amended from self-hosted 2026-08-31 — see `docs/adr/0004-zulip-as-primary-human-channel.md`. |
 | D5 | Spec Kit is used for **planning only** — never for implementation. |
 | D6 | Until M8, planning runs on the architect's laptop and lands as a PR of spec artifacts. |
 | D7 | Workers get `ask_orchestrator`. Only the orchestrator gets `ask_human`. |
@@ -308,15 +308,16 @@ architect the spec was underspecified. Do not respond by raising the cap.
 ~1.5 FTE. This is a platform build alongside product work.
 
 ### M0 — Foundations and Cordis ramp (3 weeks)
-Compose stack (Podman): Postgres, Zulip, Caddy, Langfuse. Monorepo, CI, migrations.
-ADRs for D1–D15. Zulip installed with `--push-notifications`, bots created, identities
-mapped.
+Compose stack (Podman): Postgres, Caddy. (Langfuse deferred to M7.) Monorepo, CI,
+migrations. ADRs for D1–D15. Zulip Cloud org set up, bots created, identities mapped
+(D4 amended from self-hosted — `docs/adr/0004-zulip-as-primary-human-channel.md`).
 
 **Two engineers work the Cordis primer, tutorial and extension cookbook.** Two, not
 one — this knowledge must not be single-homed.
 
-**Done when:** `podman compose up` yields working Zulip and a control plane answering
-`/healthz`, and both engineers can explain the dsh boot tree from `--dump-config`.
+**Done when:** `podman compose up` yields a control plane answering `/healthz`, a bot
+account on Zulip Cloud can send/receive via the API, and both engineers can explain
+the dsh boot tree from `--dump-config`.
 
 ### M1 — dsh runner spike and first PR (2 weeks) ⚠ highest risk
 Write `af-github` (`create_branch` first), `af-worktree`, and `af-policy`. Run under
@@ -418,17 +419,16 @@ runs.** The ceiling is human review capacity, not CPU.
 
 ```yaml
 networks:
-  edge:      # caddy ↔ webapp, zulip
+  edge:      # caddy ↔ webapp
   core:      # control-plane, postgres, bridge, langfuse, supervisor
   runners:   # internal: true — no direct egress
   egress:
 
 services:
   caddy:          [edge]
-  zulip:          [edge, core]
   webapp:         [edge, core]
   control-plane:  [core]
-  bridge:         [core]
+  bridge:         [core]            # reaches Zulip Cloud outbound only, no inbound route
   postgres:       [core]
   langfuse:       [core]
   supervisor:     [core]            # rootless podman.sock, mounted only here
@@ -442,7 +442,7 @@ unprivileged user with a rootless Podman socket (`podman system service`)
 bind-mounted into it and nowhere else.
 
 `runners` is `internal: true`. A runner's only routes out are the control-plane API
-and the egress proxy. No path to the Podman socket, Postgres or Zulip.
+and the egress proxy. No path to the Podman socket, Postgres, or Zulip Cloud.
 
 ### Egress allowlist
 ```
@@ -471,13 +471,15 @@ committed. Vault is operational cost without proportional benefit at this scale.
 Never: secrets in the manifest, in agent context, or in events.
 
 ### Backups
-Hourly `pg_dump` (7d) and daily (30d), off-machine. Zulip `manage.py backup`, same
-cadence. **Test the restore quarterly.** An untested backup is a hypothesis.
+Hourly `pg_dump` (7d) and daily (30d), off-machine. **Test the restore quarterly.** An
+untested backup is a hypothesis. Zulip is Zulip Cloud (D4 amendment) — its backups are
+Zulip's operational responsibility, not ours.
 
 ### Bootstrap order
 1. Machine, Podman, non-root user, firewall (443 + SSH keys only).
 2. Caddy with TLS.
-3. Zulip `--push-notifications`; org, team, bots, identity mapping.
+3. Zulip Cloud org (already hosted); create bots, map identities — see
+   `deploy/zulip/README.md`. No self-hosted install step.
 4. Postgres, migrations.
 5. Langfuse.
 6. GitHub App per project; private key to secrets; install on target repos.
@@ -567,7 +569,8 @@ used in anger for a month. Ship each milestone into daily use before starting th
 
 1. Write ADRs for D1–D15. Half a day; prevents months of re-litigation.
 2. Provision the machine, Podman, Compose skeleton, Postgres, Caddy.
-3. Install Zulip, create org and bots, map identities.
+3. Set up Zulip Cloud org, create bots, map identities (D4 amendment — hosted, not
+   self-installed).
 4. **Turn on branch protection for the Go/Gin repo now**, before any agent has
    credentials.
 5. `npx @deepseek-ai/dsh web` locally; run a task on a scratch repo (this is a debug

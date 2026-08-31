@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      # golangci-lint intentionally not wired yet: internal/ is still M0
+      # package skeletons (~100 lines total). Add it in M2 once there's real
+      # logic worth linting — see .claude/skills/golang-lint.
+
+  runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19"
+          cache: pnpm
+          cache-dependency-path: runner/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: runner
+      # af-* packages have no build script yet (M0 stubs) — --if-present keeps
+      # this from failing until M1 wires @deepseek-ai/cordis and real builds.
+      - run: pnpm -r --if-present build
+        working-directory: runner
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agentfleet
+          POSTGRES_PASSWORD: agentfleet
+          POSTGRES_DB: agentfleet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://agentfleet:agentfleet@localhost:5432/agentfleet?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - name: install golang-migrate
+        run: |
+          curl -sSL https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz \
+            | tar xz && sudo mv migrate /usr/local/bin/migrate
+      # Round-trip catches a broken down migration — deploy/migrations/
+      # 0001_init.down.sql has never been exercised outside this job.
+      - run: migrate -path deploy/migrations -database "$DATABASE_URL" up
+      - run: migrate -path deploy/migrations -database "$DATABASE_URL" down 1
+      - run: migrate -path deploy/migrations -database "$DATABASE_URL" up

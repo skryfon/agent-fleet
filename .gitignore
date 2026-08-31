@@ -1,6 +1,9 @@
 .env
 *.local
 
+# Zulip compose secrets (deploy/zulip.compose.yaml)
+deploy/zulip/secrets/
+
 # Go
 /bin/
 

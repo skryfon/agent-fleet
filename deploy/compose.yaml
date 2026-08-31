@@ -1,11 +1,24 @@
 # Local development subset of development-plan.md §8's compose topology.
-# Zulip, Caddy, Langfuse, supervisor, and egress-proxy join as their
-# milestones land (M0 bootstrap order item 3+, M2 supervisor). Run with
-# Podman (D11): `podman compose -f deploy/compose.yaml up`.
+# Zulip is Zulip Cloud (hosted), not a local service — see
+# docs/adr/0004-zulip-as-primary-human-channel.md and deploy/zulip/README.md.
+# Langfuse is deliberately deferred to M7: nothing emits traces before M1, and
+# Langfuse v3 needs ClickHouse + Redis + MinIO for an empty database — not
+# worth running from M0. supervisor, bridge, webapp, egress-proxy join as
+# their milestones land.
+# Run with Podman (D11): `podman compose -f deploy/compose.yaml up`.
+name: agentfleet
+
+networks:
+  edge:
+  core:
+  runners:
+    internal: true # 0009/0011: no path to postgres, zulip, or the podman socket
+  egress:
 
 services:
   postgres:
     image: docker.io/library/postgres:16-alpine
+    networks: [core]
     environment:
       POSTGRES_USER: agentfleet
       POSTGRES_PASSWORD: agentfleet
@@ -21,10 +34,33 @@ services:
       timeout: 2s
       retries: 15
 
+  # One-shot: applies deploy/migrations then exits. Removes the local
+  # golang-migrate binary from the happy path; `make migrate-up`/`migrate-down`
+  # still work directly against DATABASE_URL for anyone who has it installed.
+  migrate:
+    image: docker.io/migrate/migrate:v4.18.1
+    networks: [core]
+    volumes:
+      - ./migrations:/migrations:ro
+    entrypoint:
+      [
+        "migrate",
+        "-path",
+        "/migrations",
+        "-database",
+        "postgres://agentfleet:agentfleet@postgres:5432/agentfleet?sslmode=disable",
+        "up",
+      ]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   control-plane:
     build:
       context: ..
       dockerfile: deploy/control-plane.Dockerfile
+    networks: [core]
     environment:
       CONTROL_PLANE_ADDR: ":8080"
       DATABASE_URL: postgres://agentfleet:agentfleet@postgres:5432/agentfleet?sslmode=disable
@@ -33,6 +69,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    networks: [edge, core]
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:8081:80"
+    depends_on:
+      - control-plane
+
+  # supervisor:    [core], rootless podman.sock mounted only here — lands M2
+  # bridge:        [core], stateless zulip <-> control-plane translation — M3
+  # webapp:        [edge, core] — M7
+  # egress-proxy:  [runners, egress], filters PUT /repos/*/pulls/*/merge — M4
 
 volumes:
   agentfleet-postgres:
