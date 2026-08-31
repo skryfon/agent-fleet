@@ -1,0 +1,26 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "deploy/migrations"
+    queries: "internal/store/queries"
+    # A live catalog is what lets sqlc resolve builtins its static analyzer
+    # can't (e.g. multi-array unnest() in AppendMirrorEvents) — verified
+    # live: generation fails without one. Points at deploy/compose.yaml's
+    # postgres service (`make up` first, migrations included) — see the
+    # `sqlc` Makefile target. Never used in CI: CI's `sqlc diff` step only
+    # fails on drift between this file and the already-committed
+    # internal/store/gen, it does not regenerate.
+    database:
+      uri: "postgres://agentfleet:agentfleet@localhost:5433/agentfleet?sslmode=disable"
+    gen:
+      go:
+        package: "db"
+        out: "internal/store/gen"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_pointers_for_null_types: true
+        emit_prepared_queries: false
+        emit_interface: true
+        overrides:
+          - db_type: "uuid"
+            go_type: "github.com/google/uuid.UUID"

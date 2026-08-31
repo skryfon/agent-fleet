@@ -14,12 +14,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          cache: true
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
-      # golangci-lint intentionally not wired yet: internal/ is still M0
-      # package skeletons (~100 lines total). Add it in M2 once there's real
-      # logic worth linting — see .claude/skills/golang-lint.
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
 
   runner:
     runs-on: ubuntu-latest
@@ -97,3 +98,47 @@ jobs:
       - run: migrate -path deploy/migrations -database "$DATABASE_URL" up
       - run: migrate -path deploy/migrations -database "$DATABASE_URL" down 1
       - run: migrate -path deploy/migrations -database "$DATABASE_URL" up
+
+  # sqlc's static analyzer can't resolve every builtin it needs (e.g.
+  # multi-array unnest() in AppendMirrorEvents) without a live catalog —
+  # verified while writing internal/store/queries/event.sql. Postgres here
+  # is published on 5433 to match sqlc.yaml's database.uri exactly, so no
+  # env-var indirection is needed. internal/store/gen is committed, not
+  # built in CI, so a stale checkin (schema or query changed,
+  # `go tool sqlc generate` not re-run) fails loudly here instead of
+  # silently compiling against last week's queries. Reuses the same
+  # migrated Postgres for the `integration`-tagged tests (internal/store's
+  # idempotent-mirror, WithTx-atomicity, and append-only-trigger tests) —
+  # both need a live, migrated database, no reason to stand one up twice.
+  store-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agentfleet
+          POSTGRES_PASSWORD: agentfleet
+          POSTGRES_DB: agentfleet
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://agentfleet:agentfleet@localhost:5433/agentfleet?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: install golang-migrate
+        run: |
+          curl -sSL https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz \
+            | tar xz && sudo mv migrate /usr/local/bin/migrate
+      - run: migrate -path deploy/migrations -database "$DATABASE_URL" up
+      - if: hashFiles('internal/store/queries/*.sql') != ''
+        run: go tool sqlc diff
+      - run: go test -tags=integration ./...

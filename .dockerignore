@@ -4,8 +4,6 @@
 **/lib
 **/*.tsbuildinfo
 webapp/
-cmd/
-internal/
 docs/
 deploy/zulip/secrets/
 .env

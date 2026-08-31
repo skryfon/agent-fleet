@@ -1,0 +1,102 @@
+version: "2"
+run:
+  concurrency: 4
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0 # 0 = unlimited (we want ALL issues)
+  max-same-issues: 50
+
+linters:
+  enable:
+    # correctness
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - errorlint
+    - nilerr
+    - forcetypeassert
+    - copyloopvar
+    - durationcheck
+    - reassign
+    # style
+    - gocritic
+    - revive
+    - whitespace
+    - godot
+    - misspell
+    - predeclared
+    - errname
+    # complexity
+    - gocyclo
+    - funlen
+    # security & resources
+    - gosec
+    - bodyclose
+    - noctx
+    - contextcheck
+    - sqlclosecheck
+    - rowserrcheck
+    # logging
+    - sloglint
+    # testing
+    - usetesting
+    # modernization & meta
+    - modernize
+    - intrange
+    - usestdlibvars
+    - exhaustive
+    - nolintlint
+
+  disable:
+    - lll
+    - prealloc
+    - wrapcheck
+    - err113
+    - mnd
+    - iface
+    - nakedret
+    - gocognit
+    - cyclop
+    - depguard
+    - goheader
+    - importas
+    - funcorder
+    - varnamelen
+    - exhaustruct
+    - gochecknoglobals
+    - gochecknoinits
+    - unparam
+    - testpackage
+
+  exclusions:
+    paths:
+      - vendor$
+      - third_party$
+      - examples$
+      # sqlc-generated code — reviewed at generation time, not by hand.
+      - internal/store/gen$
+
+  settings:
+    funlen:
+      lines: 120
+      statements: 80
+    gocyclo:
+      min-complexity: 13
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra-rules: true
+  exclusions:
+    generated: lax
+    paths:
+      - internal/store/gen$
