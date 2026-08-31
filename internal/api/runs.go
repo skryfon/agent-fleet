@@ -106,11 +106,11 @@ type containerReportRequest struct {
 	ExitCode *int32 `json:"exit_code"`
 }
 
-// containerReport is internal/supervisor's callback (P5's cmd/supervisor is
-// its real caller; internal/reconcile, P8, may also call it for a run it
-// discovers has already exited). Kept intentionally thin: the concurrency
-// semaphore, container watching, and orphan reaping that decide WHEN to
-// call this are P5/P8 scope, not this handler's.
+// containerReport is cmd/supervisor's callback (internal/reconcile, P8, may
+// also call it for a run it discovers has already exited). Kept
+// intentionally thin: the concurrency semaphore, container watching, and
+// orphan reaping that decide WHEN to call this live in cmd/supervisor
+// (P5) and internal/reconcile (P8), not this handler.
 func (s *Server) containerReport(w http.ResponseWriter, r *http.Request) {
 	runID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {

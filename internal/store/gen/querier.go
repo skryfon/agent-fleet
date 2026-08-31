@@ -59,6 +59,11 @@ type Querier interface {
 	GetFeatureByProjectSlug(ctx context.Context, arg GetFeatureByProjectSlugParams) (Feature, error)
 	GetIdentityByGithubLogin(ctx context.Context, githubLogin *string) (Identity, error)
 	GetIdentityByZulipUserID(ctx context.Context, zulipUserID *string) (Identity, error)
+	// internal/supervisor's run.launch handler (P5) needs exactly this to build
+	// a launch request: the task content for TASK, and the project's repo for
+	// REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
+	// exactly one repo before M6's multi-repo manifest work.
+	GetLaunchContext(ctx context.Context, id uuid.UUID) (GetLaunchContextRow, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (Project, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error)
@@ -96,6 +101,13 @@ type Querier interface {
 	// never persisted (development-plan.md §8 Secrets) — internal/supervisor
 	// hands the plaintext to the container's env directly.
 	InsertRun(ctx context.Context, arg InsertRunParams) (Run, error)
+	// internal/supervisor's run.launch handler (P5) needs the run's id BEFORE
+	// insert, to derive its bearer token deterministically
+	// (HMAC-SHA256(SUPERVISOR_SECRET, run_id) — see handlers.go's runToken) so a
+	// redelivered launch re-derives the identical token instead of needing the
+	// plaintext persisted anywhere. Same columns as InsertRun plus an explicit
+	// id in place of the table's gen_random_uuid() default.
+	InsertRunWithID(ctx context.Context, arg InsertRunWithIDParams) (Run, error)
 	// Used by tasks:ingest (internal/domain/tasksmd, P4) for a task whose
 	// external_ref hasn't been seen before on this feature.
 	InsertTask(ctx context.Context, arg InsertTaskParams) (Task, error)

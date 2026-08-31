@@ -48,6 +48,41 @@ func (q *Queries) GetActiveRunForTask(ctx context.Context, taskID uuid.UUID) (Ru
 	return i, err
 }
 
+const getLaunchContext = `-- name: GetLaunchContext :one
+SELECT
+    t.id AS task_id, t.title, t.intent, t.acceptance_criteria,
+    p.repos[1]::text AS repo_url
+FROM task t
+JOIN feature f ON f.id = t.feature_id
+JOIN project p ON p.id = f.project_id
+WHERE t.id = $1
+`
+
+type GetLaunchContextRow struct {
+	TaskID             uuid.UUID `json:"task_id"`
+	Title              string    `json:"title"`
+	Intent             string    `json:"intent"`
+	AcceptanceCriteria []byte    `json:"acceptance_criteria"`
+	RepoUrl            string    `json:"repo_url"`
+}
+
+// internal/supervisor's run.launch handler (P5) needs exactly this to build
+// a launch request: the task content for TASK, and the project's repo for
+// REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
+// exactly one repo before M6's multi-repo manifest work.
+func (q *Queries) GetLaunchContext(ctx context.Context, id uuid.UUID) (GetLaunchContextRow, error) {
+	row := q.db.QueryRow(ctx, getLaunchContext, id)
+	var i GetLaunchContextRow
+	err := row.Scan(
+		&i.TaskID,
+		&i.Title,
+		&i.Intent,
+		&i.AcceptanceCriteria,
+		&i.RepoUrl,
+	)
+	return i, err
+}
+
 const getRunByID = `-- name: GetRunByID :one
 SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code FROM run WHERE id = $1
 `
@@ -212,6 +247,66 @@ type InsertRunParams struct {
 // hands the plaintext to the container's env directly.
 func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, insertRun,
+		arg.TaskID,
+		arg.ParentRunID,
+		arg.Role,
+		arg.Model,
+		arg.State,
+		arg.TokenHash,
+	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.ParentRunID,
+		&i.Role,
+		&i.Model,
+		&i.ContainerID,
+		&i.DshSessionID,
+		&i.State,
+		&i.Checkpoint,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.TokensIn,
+		&i.TokensOut,
+		&i.CostUsd,
+		&i.CreatedAt,
+		&i.Version,
+		&i.UpdatedAt,
+		&i.NextEventSeq,
+		&i.TokenHash,
+		&i.LastHeartbeatAt,
+		&i.Attempt,
+		&i.ExitCode,
+	)
+	return i, err
+}
+
+const insertRunWithID = `-- name: InsertRunWithID :one
+INSERT INTO run (id, task_id, parent_run_id, role, model, state, token_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+`
+
+type InsertRunWithIDParams struct {
+	ID          uuid.UUID   `json:"id"`
+	TaskID      uuid.UUID   `json:"task_id"`
+	ParentRunID pgtype.UUID `json:"parent_run_id"`
+	Role        string      `json:"role"`
+	Model       string      `json:"model"`
+	State       string      `json:"state"`
+	TokenHash   []byte      `json:"token_hash"`
+}
+
+// internal/supervisor's run.launch handler (P5) needs the run's id BEFORE
+// insert, to derive its bearer token deterministically
+// (HMAC-SHA256(SUPERVISOR_SECRET, run_id) — see handlers.go's runToken) so a
+// redelivered launch re-derives the identical token instead of needing the
+// plaintext persisted anywhere. Same columns as InsertRun plus an explicit
+// id in place of the table's gen_random_uuid() default.
+func (q *Queries) InsertRunWithID(ctx context.Context, arg InsertRunWithIDParams) (Run, error) {
+	row := q.db.QueryRow(ctx, insertRunWithID,
+		arg.ID,
 		arg.TaskID,
 		arg.ParentRunID,
 		arg.Role,

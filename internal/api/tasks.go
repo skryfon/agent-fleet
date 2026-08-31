@@ -315,11 +315,8 @@ func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request) {
 // applyTaskTrigger is startTask/cancelTask's shared body: parse the path
 // id, apply the trigger, and translate the outcome to an HTTP response.
 // Neither handler creates a Run row itself — the run.launch effect
-// TrStart's transition schedules is handled by internal/supervisor's
-// relay handler (P5, not yet wired into cmd/control-plane); until then that
-// effect poisons on the outbox with "no handler registered", which is
-// internal/outbox.Relay's own documented behavior for an unimplemented
-// topic, not an internal/api bug.
+// TrStart's transition schedules is handled by internal/supervisor.RunLaunch
+// (P5), registered on cmd/control-plane's outbox relay.
 func (s *Server) applyTaskTrigger(w http.ResponseWriter, r *http.Request, tr domain.Trigger, actor string) {
 	taskID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {

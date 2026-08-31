@@ -1,10 +1,17 @@
 COMPOSE := podman compose -f deploy/compose.yaml
 DATABASE_URL ?= postgres://agentfleet:agentfleet@localhost:5433/agentfleet?sslmode=disable
 
-.PHONY: up down logs build test check migrate-up migrate-down lint sqlc test-integration e2e
+.PHONY: up down logs build test check migrate-up migrate-down lint sqlc test-integration e2e runner-image
 
 up:
 	$(COMPOSE) up -d --build
+
+# The runner image is not itself a compose service (cmd/supervisor creates
+# containers from it dynamically, one per Run, on the `runners` network) —
+# build it once before `make up` or a launch fails with a clear
+# image-not-found error rather than an implicit pull.
+runner-image:
+	podman build -f deploy/runner.Dockerfile -t agentfleet-runner .
 
 down:
 	$(COMPOSE) down

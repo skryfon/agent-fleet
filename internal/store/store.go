@@ -1,8 +1,11 @@
 // Package store is the Postgres access layer: sqlc-generated queries
 // (internal/store/gen) over the schema in deploy/migrations, no ORM
 // (development-plan.md §3, §7). The control plane is the only writer
-// (development-plan.md §2) — internal/supervisor never imports this
-// package.
+// (development-plan.md §2) — internal/podman and cmd/supervisor (the one
+// process with Podman access, D11) never import this package.
+// internal/supervisor DOES import it: it runs inside the control-plane
+// process as the run.launch/run.kill outbox handlers and only ever talks to
+// the separate cmd/supervisor daemon over HTTP, never to Podman directly.
 package store
 
 import (

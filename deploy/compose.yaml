@@ -3,9 +3,15 @@
 # docs/adr/0004-zulip-as-primary-human-channel.md and deploy/zulip/README.md.
 # Langfuse is deliberately deferred to M7: nothing emits traces before M1, and
 # Langfuse v3 needs ClickHouse + Redis + MinIO for an empty database — not
-# worth running from M0. supervisor, bridge, webapp, egress-proxy join as
-# their milestones land.
+# worth running from M0. bridge, webapp, egress-proxy join as their
+# milestones land.
 # Run with Podman (D11): `podman compose -f deploy/compose.yaml up`.
+#
+# Before `make up`: build the runner image once (`make runner-image`) — the
+# supervisor daemon fails a launch with a clear error if it's absent rather
+# than pulling implicitly, since it is not itself a compose service (it is
+# created dynamically, one container per Run, on the `runners` network
+# below).
 name: agentfleet
 
 networks:
@@ -68,11 +74,70 @@ services:
       SUPERVISOR_SECRET: ${SUPERVISOR_SECRET}
     ports:
       - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "/control-plane", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+
+  supervisor:
+    build:
+      context: ..
+      dockerfile: deploy/supervisor.Dockerfile
+    networks: [core]
+    # Rootless Podman (D11): this bind-mounted socket keeps the REAL host
+    # uid:gid of whoever owns it — verified live that this rootless setup
+    # does not remap bind-mounted file ownership into the container's
+    # namespace, so `user: "0:0"` (assuming a container-root -> host-user
+    # identity map) got permission denied even after the SELinux relabel
+    # below fixed the label half of the problem. PODMAN_SOCKET_UID/GID must
+    # be the real uid:gid that owns PODMAN_SOCKET_DIR's socket (`stat -c
+    # '%u:%g' $PODMAN_SOCKET_DIR/podman/podman.sock`) — on a plain Linux
+    # host this is simply your own uid:gid. distroless-nonroot's baked-in
+    # USER is overridden only here.
+    user: "${PODMAN_SOCKET_UID:-1000}:${PODMAN_SOCKET_GID:-1000}"
+    environment:
+      SUPERVISOR_ADDR: ":8090"
+      SUPERVISOR_SECRET: ${SUPERVISOR_SECRET}
+      CONTROL_PLANE_URL: "http://control-plane:8080"
+      PODMAN_SOCKET: "/run/podman/podman.sock"
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-agentfleet-runner}
+      RUNNER_NETWORK: "agentfleet_runners"
+      MAX_CONCURRENT_RUNS: ${MAX_CONCURRENT_RUNS:-3}
+      GH_TOKEN: ${GH_TOKEN}
+      OMNI_ROUTE_API_KEY: ${OMNI_ROUTE_API_KEY}
+    # PODMAN_SOCKET_DIR, not XDG_RUNTIME_DIR: podman itself (the CLI running
+    # `compose up`) also reads XDG_RUNTIME_DIR for its own state — verified
+    # live that setting it to point compose at the socket breaks the podman
+    # client itself ("Failed to obtain podman configuration: lstat /run: no
+    # such file or directory" on a host where that path isn't real, e.g.
+    # macOS). On a real target Linux host, run with
+    # `PODMAN_SOCKET_DIR=$XDG_RUNTIME_DIR make up`. Under Podman Desktop's
+    # machine VM, this must be the VM-internal rootless user's own runtime
+    # dir, not the macOS host's — find it with
+    # `podman machine ssh -- systemctl --user status podman.socket`.
+    # `:z` (shared SELinux relabel): on an SELinux-enforcing host the
+    # socket's own label (user_tmp_t) isn't one containers can otherwise
+    # connect to — verified live as "permission denied" without this, on a
+    # host where `getenforce` prints Enforcing. Shared, not `:Z` (exclusive
+    # private), since this same socket may be relabeled by other things.
+    volumes:
+      - ${PODMAN_SOCKET_DIR:-/run/user/1000}/podman/podman.sock:/run/podman/podman.sock:z
+    healthcheck:
+      test: ["CMD", "/supervisor", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+    depends_on:
+      control-plane:
+        condition: service_healthy
 
   caddy:
     image: docker.io/library/caddy:2-alpine
@@ -84,7 +149,6 @@ services:
     depends_on:
       - control-plane
 
-  # supervisor:    [core], rootless podman.sock mounted only here — lands M2
   # bridge:        [core], stateless zulip <-> control-plane translation — M3
   # webapp:        [edge, core] — M7
   # egress-proxy:  [runners, egress], filters PUT /repos/*/pulls/*/merge — M4

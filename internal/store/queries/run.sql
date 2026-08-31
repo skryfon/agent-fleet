@@ -6,6 +6,17 @@ INSERT INTO run (task_id, parent_run_id, role, model, state, token_hash)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- name: InsertRunWithID :one
+-- internal/supervisor's run.launch handler (P5) needs the run's id BEFORE
+-- insert, to derive its bearer token deterministically
+-- (HMAC-SHA256(SUPERVISOR_SECRET, run_id) — see handlers.go's runToken) so a
+-- redelivered launch re-derives the identical token instead of needing the
+-- plaintext persisted anywhere. Same columns as InsertRun plus an explicit
+-- id in place of the table's gen_random_uuid() default.
+INSERT INTO run (id, task_id, parent_run_id, role, model, state, token_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING *;
+
 -- name: GetRunByID :one
 SELECT * FROM run WHERE id = $1;
 
@@ -51,6 +62,19 @@ UPDATE run SET last_heartbeat_at = now() WHERE id = $1;
 -- name: IncrementRunAttempt :one
 UPDATE run SET attempt = attempt + 1, updated_at = now() WHERE id = $1
 RETURNING *;
+
+-- name: GetLaunchContext :one
+-- internal/supervisor's run.launch handler (P5) needs exactly this to build
+-- a launch request: the task content for TASK, and the project's repo for
+-- REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
+-- exactly one repo before M6's multi-repo manifest work.
+SELECT
+    t.id AS task_id, t.title, t.intent, t.acceptance_criteria,
+    p.repos[1]::text AS repo_url
+FROM task t
+JOIN feature f ON f.id = t.feature_id
+JOIN project p ON p.id = f.project_id
+WHERE t.id = $1;
 
 -- name: IncrementRunEventSeq :one
 -- Bumps next_event_seq (under the row lock the caller already holds via
