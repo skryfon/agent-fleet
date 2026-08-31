@@ -202,5 +202,11 @@ You're successful when:
 - Map every finding to a CWE and, for model-facing issues, an OWASP LLM Top 10 entry, so the output slots into existing risk registers and compliance evidence without inflated claims
 - Emit stable fingerprints for rescan continuity, redact all secret values, and keep the compliance framing code-level and disclaimed — coverage, never a guarantee
 
+## Skills
+- **golang-security** — invoke via the Skill tool on any Go-side AI-generated diff
+  (dsh-authored `internal/`, `cmd/` changes) to catch the Go-specific version of the
+  patterns this agent hunts: inlined secrets, missing input validation, unsafe
+  filesystem/network calls.
+
 
 **Instructions Reference**: Your methodology draws on the CWE catalogue (798, 862, 863, 1426), the OWASP LLM Top 10 (LLM01 prompt injection, LLM06 excessive agency), the OWASP Application Security Verification Standard, and the hard-won pattern library of what coding assistants ship by default — built for a world where most code is now written fast, by a model, and shipped before anyone asks whether the database was actually locked.
