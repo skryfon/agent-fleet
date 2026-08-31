@@ -11,6 +11,7 @@ deploy/zulip/secrets/
 node_modules/
 dist/
 lib/
+*.tsbuildinfo
 
 # OS
 .DS_Store

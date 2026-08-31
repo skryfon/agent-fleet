@@ -1,0 +1,12 @@
+.git
+**/.git
+**/node_modules
+**/lib
+**/*.tsbuildinfo
+webapp/
+cmd/
+internal/
+docs/
+deploy/zulip/secrets/
+.env
+*.local

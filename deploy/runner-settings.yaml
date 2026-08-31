@@ -1,0 +1,21 @@
+# Baked into the runner image as $DSH_HOME/settings.yaml. OmniRoute needs no
+# af-llm-* plugin — @deepseek-ai/dsh-llm-pi-ai (dsh-base) mounts dormant until
+# a `llm-pi-ai:` settings section supplies routes; see runner/README.md.
+# OMNI_ROUTE_API_KEY is supplied at `podman run` time, never baked in here.
+llm-pi-ai:
+  providers:
+    omni-route:
+      displayName: omni-route
+      api: openai-completions
+      baseURL: http://host.containers.internal:20128
+      apiKeyEnv: OMNI_ROUTE_API_KEY
+      models:
+        - id: agy/gemini-3.6-flash-low
+          name: gemini-3.6-flash-low
+          contextWindow: 1048576
+        - id: cc/claude-sonnet-5-medium
+          name: cc/claude-sonnet-5-medium
+          contextWindow: 1000000
+agent-default-model:
+  provider: omni-route
+  model: agy/gemini-3.6-flash-low

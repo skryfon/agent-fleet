@@ -33,13 +33,39 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.19"
+      # af-* packages type-check against the vendored deepseek-harness build
+      # (`@deepseek-ai/cordis`, `@deepseek-ai/dsh-tools`) via `link:` devDeps
+      # — deepseek-harness/vendor and packages/core/*/lib are gitignored in
+      # the submodule, so they don't exist on a fresh checkout and must be
+      # built here. Cached by submodule commit SHA since it's version-pinned
+      # (never bumped outside the M4.5 upgrade drill) — this step is a cache
+      # hit on every ordinary PR.
+      - name: cache deepseek-harness host build
+        id: dsh-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deepseek-harness/node_modules
+            deepseek-harness/**/lib
+          key: dsh-host-build-${{ hashFiles('deepseek-harness/pnpm-lock.yaml') }}
+      - if: steps.dsh-cache.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
+        working-directory: deepseek-harness
+      - if: steps.dsh-cache.outputs.cache-hit != 'true'
+        run: pnpm run build:lib:host
+        working-directory: deepseek-harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19"
           cache: pnpm
           cache-dependency-path: runner/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: runner
-      # af-* packages have no build script yet (M0 stubs) — --if-present keeps
-      # this from failing until M1 wires @deepseek-ai/cordis and real builds.
-      - run: pnpm -r --if-present build
+      - run: pnpm run typecheck
+        working-directory: runner
+      - run: pnpm run build
+        working-directory: runner
+      - run: npx vitest run
         working-directory: runner
 
   migrations:

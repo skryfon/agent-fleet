@@ -25,11 +25,20 @@ custom application. There is **no Claude Agent SDK** anywhere in this repo.
 
 ## Commands
 
-Not yet scaffolded (pre-M0). Once each module exists, add here:
-- Go: `go build ./...`, `go test ./...`, `golangci-lint run`
-- runner (each `af-*` package, and the bundle): `pnpm test`, `pnpm build`
-- Composition smoke test: `dsh --profile agentfleet-runner --dump-config` — every
-  `af-*` row must appear, no Cordis fiber may sit `PENDING`
+- Go: `go build ./...`, `go test ./...`, `golangci-lint run` (lint not wired yet — M2)
+- runner (`runner/`): `pnpm install`, `pnpm run typecheck`, `pnpm run build`,
+  `npx vitest run`
+- Composition smoke test: from a target repo,
+  `node <path-to>/deepseek-harness/apps/cli/lib/bin.js --profile agentfleet-runner
+  --dump-config` — every `af-*` row must appear, no Cordis fiber may sit `PENDING`.
+  **Do not run `dsh` via `pnpm dsh` from outside `deepseek-harness/`** — pnpm scripts
+  always execute with cwd pinned to the package root, which silently breaks any tool
+  (e.g. `create_branch`) that shells out relative to the invoking directory. Use the
+  built `apps/cli/lib/bin.js` directly instead; see `runner/README.md`.
+- LLM: model requests route through OmniRoute (`http://localhost:20128`) via
+  `@deepseek-ai/dsh-llm-pi-ai`'s `omni-route` route, already declared in
+  `$DSH_HOME/settings.yaml` — configuration, not a plugin. No `af-llm-*` package
+  exists or is needed; see the M1 plan for the full writeup.
 - webapp: `npm test`, `npm run build` (in `webapp/`)
 
 ## Locked decisions (do not relitigate without flagging it)

@@ -5,5 +5,14 @@
   "packageManager": "pnpm@11.7.0",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
   }
 }

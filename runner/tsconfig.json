@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/af-policy" },
+    { "path": "packages/af-github" },
+    { "path": "packages/af-worktree" }
+  ]
+}

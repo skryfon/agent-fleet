@@ -1,19 +1,31 @@
 # dsh-bundle-agentfleet — stacks the af-* plugins over dsh-base + dsh-headless
 # to form the agentfleet-runner profile (development-plan.md §5, §7).
 #
-# TODO(M1): once af-* packages depend on @deepseek-ai/cordis and export real
-# apply(ctx, config), verify with `dsh --profile agentfleet-runner
-# --dump-config` that every row below appears and no fiber sits PENDING.
+# M1: af-policy, af-github, and af-worktree are real plugins. af-control and
+# af-context remain comment-only stubs — disabled here so `--dump-config`
+# shows no PENDING fiber for a plugin whose apply() does nothing yet; each
+# flips on as its milestone lands (M2).
+#
+# The kill criterion (development-plan.md M1: a deny from af-policy must not
+# require patching dsh-base) is proven — see runner/README.md.
 
 - insert:
     - id: af-control
       name: '@agentfleet/af-control'
+      disabled: true # stub; wired in M2
 
     - id: af-context
       name: '@agentfleet/af-context'
+      disabled: true # stub; wired in M1/M2 per development-plan.md §5
 
+    # baseRepoDir/worktreeDir are unset outside the container (the entrypoint
+    # sets them after `git worktree add`); apply() no-ops when either is
+    # undefined, so a bare host run stays a plain no-worktree checkout.
     - id: af-worktree
       name: '@agentfleet/af-worktree'
+      config:
+        baseRepoDir: !!js process.env.AGENTFLEET_BASE_REPO_DIR
+        worktreeDir: !!js process.env.AGENTFLEET_WORKTREE_DIR
 
     - id: af-github
       name: '@agentfleet/af-github'
