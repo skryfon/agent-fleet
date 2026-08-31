@@ -122,6 +122,16 @@ Skills (`.claude/skills/`, invoke via the Skill tool):
   the AgentFleet-specific constraints (D14, `runners` network isolation, in-process
   subagent limits) in one place instead of re-deriving them from
   `deepseek-harness/docs/` each time.
+- **`golang-lint`**, **`golang-security`**, **`golang-database`**,
+  **`golang-concurrency`**, **`golang-continuous-integration`**,
+  **`golang-observability`** — vendored from
+  [samber/cc-skills-golang](https://github.com/samber/cc-skills-golang) (MIT) into
+  `.claude/skills/` for the `cmd/`, `internal/` Go modules. Mapped to the relevant
+  agent per the table above via each agent file's own `## Skills` section
+  (`code-reviewer`, `engineering-minimal-change-engineer`,
+  `engineering-database-reliability-engineer`, `engineering-devops-automator`,
+  `security-appsec-engineer`, `security-ai-generated-code-auditor`). Third-party
+  content — review before bumping past the vendored snapshot.
 
 ## Pointers
 
