@@ -1,0 +1,13 @@
+.env
+*.local
+
+# Go
+/bin/
+
+# Node
+node_modules/
+dist/
+lib/
+
+# OS
+.DS_Store

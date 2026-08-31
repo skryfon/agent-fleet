@@ -1,0 +1,29 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  bundle: {}
+
+  packages/af-ask-human: {}
+
+  packages/af-budget: {}
+
+  packages/af-context: {}
+
+  packages/af-control: {}
+
+  packages/af-github: {}
+
+  packages/af-policy: {}
+
+  packages/af-subagent: {}
+
+  packages/af-webhook: {}
+
+  packages/af-worktree: {}

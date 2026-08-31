@@ -1,0 +1,38 @@
+# dsh-bundle-agentfleet — stacks the af-* plugins over dsh-base + dsh-headless
+# to form the agentfleet-runner profile (development-plan.md §5, §7).
+#
+# TODO(M1): once af-* packages depend on @deepseek-ai/cordis and export real
+# apply(ctx, config), verify with `dsh --profile agentfleet-runner
+# --dump-config` that every row below appears and no fiber sits PENDING.
+
+- insert:
+    - id: af-control
+      name: '@agentfleet/af-control'
+
+    - id: af-context
+      name: '@agentfleet/af-context'
+
+    - id: af-worktree
+      name: '@agentfleet/af-worktree'
+
+    - id: af-github
+      name: '@agentfleet/af-github'
+
+    - id: af-policy
+      name: '@agentfleet/af-policy'
+
+    - id: af-ask-human
+      name: '@agentfleet/af-ask-human'
+      disabled: true # enabled in M3
+
+    - id: af-budget
+      name: '@agentfleet/af-budget'
+      disabled: true # enabled in M4
+
+    - id: af-subagent
+      name: '@agentfleet/af-subagent'
+      disabled: true # enabled in M5
+
+    - id: af-webhook
+      name: '@agentfleet/af-webhook'
+      disabled: true # optional, enabled in M6

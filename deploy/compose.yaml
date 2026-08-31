@@ -1,0 +1,38 @@
+# Local development subset of development-plan.md §8's compose topology.
+# Zulip, Caddy, Langfuse, supervisor, and egress-proxy join as their
+# milestones land (M0 bootstrap order item 3+, M2 supervisor). Run with
+# Podman (D11): `podman compose -f deploy/compose.yaml up`.
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentfleet
+      POSTGRES_PASSWORD: agentfleet
+      POSTGRES_DB: agentfleet
+    ports:
+      # host 5433: 5432 is commonly already taken by a host-installed postgres
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - agentfleet-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentfleet"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  control-plane:
+    build:
+      context: ..
+      dockerfile: deploy/control-plane.Dockerfile
+    environment:
+      CONTROL_PLANE_ADDR: ":8080"
+      DATABASE_URL: postgres://agentfleet:agentfleet@postgres:5432/agentfleet?sslmode=disable
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  agentfleet-postgres:

@@ -1,0 +1,67 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Read(./**)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(golangci-lint:*)",
+      "Bash(npm run:*)",
+      "Bash(npm test:*)",
+      "Bash(podman compose config:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(podman compose up:*)",
+      "Bash(podman compose down:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/secrets/**)",
+      "Read(./**/*.pem)",
+      "Read(./**/id_rsa*)",
+      "Bash(rm -rf:*)",
+      "Bash(curl:*)",
+      "Bash(git push --force:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/block-secrets.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/format-on-edit.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
