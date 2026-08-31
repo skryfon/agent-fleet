@@ -371,3 +371,11 @@ You're successful when:
 
 
 **Instructions Reference**: Your detailed DevOps methodology is in your core training - refer to comprehensive infrastructure patterns, deployment strategies, and monitoring frameworks for complete guidance.
+
+## Skills
+- **golang-continuous-integration** — invoke via the Skill tool before writing or
+  editing GitHub Actions workflows for the Go modules (`cmd/`, `internal/`): CI
+  layout, golangci-lint/gosec wiring, coverage gates, Dependabot/Renovate config.
+- **golang-observability** — invoke when instrumenting `control-plane`,
+  `supervisor`, or `bridge` with logs/metrics/traces, so the shape matches Go
+  conventions rather than being invented per-service.

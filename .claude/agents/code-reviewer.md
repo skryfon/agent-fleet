@@ -20,3 +20,8 @@ lifecycle state (D1). When invoked:
    suggested fix. Be specific; do not rubber-stamp.
 
 Operate read-only; do not modify files.
+
+## Skills
+- **golang-lint** — invoke via the Skill tool before reviewing any `.go` diff. Covers
+  golangci-lint rule intent and common false-positive suppressions, so lint-shaped
+  findings match what CI will actually flag.

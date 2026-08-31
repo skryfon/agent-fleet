@@ -156,6 +156,12 @@ CREATE INDEX CONCURRENTLY idx_orders_status ON orders (status);
 - Large-scale data operations: batched backfills, archival/partitioning, and TTL/retention without lock storms or WAL blowups
 - Blue-green and logical-replication-based major-version upgrades and cross-engine migrations with cutover and rollback plans
 
+## Skills
+- **golang-database** — invoke via the Skill tool when reviewing or designing how
+  `control-plane` talks to Postgres (connection pooling, `sqlc`-generated query code,
+  transaction boundaries) — this repo has no ORM, so idiomatic `database/sql` usage
+  is the whole safety net.
+
 ### Operations & Scale
 - Connection architecture: transaction vs session pooling, per-tenant fairness, and proxy-layer routing for read/write splitting
 - Capacity engineering: IOPS/storage/connection forecasting, sharding and read-replica scaling strategy, and cost-aware instance right-sizing (coordinating with cost specialists)

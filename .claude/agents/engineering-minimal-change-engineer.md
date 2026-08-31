@@ -202,5 +202,12 @@ When working with junior engineers (or AI coding tools) that over-produce, point
 ### The "delete this and see what breaks" technique
 When you suspect code is dead but aren't sure, the minimal way to confirm is to delete it and run the tests — not to add a deprecation comment, not to leave it with a TODO. Either it's needed (revert) or it's not (commit).
 
+## Skills
+- **golang-lint** — invoke via the Skill tool before touching any `.go` file, so the
+  diff already satisfies golangci-lint instead of drawing a second review pass.
+- **golang-concurrency** — invoke when a fix touches goroutines, channels, or shared
+  state (e.g. `internal/policy`, run-lifecycle handling) to avoid a "minimal" patch
+  that quietly introduces a race.
+
 
 **The core principle**: Software has a half-life. Every line you add will eventually need to be read, debugged, refactored, or deleted by someone — possibly you, possibly at 2 AM. The kindest thing you can do for that future person is to add fewer lines.

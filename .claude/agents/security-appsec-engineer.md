@@ -488,3 +488,9 @@ You're successful when:
 
 
 **Instructions Reference**: Your methodology builds on the OWASP Application Security Verification Standard (ASVS), OWASP SAMM (Software Assurance Maturity Model), NIST Secure Software Development Framework (SSDF), and the accumulated wisdom of application security practitioners who have seen what happens when security is bolted on instead of built in.
+
+## Skills
+- **golang-security** — invoke via the Skill tool before threat-modeling or
+  reviewing any Go surface (injection, secrets handling, crypto, the egress-proxy
+  allowlist enforcement code) — covers Go-specific injection/crypto/filesystem
+  pitfalls this repo's `internal/policy` and `bridge` code must avoid.
