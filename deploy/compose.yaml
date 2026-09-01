@@ -72,6 +72,9 @@ services:
       DATABASE_URL: postgres://agentfleet:agentfleet@postgres:5432/agentfleet?sslmode=disable
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       SUPERVISOR_SECRET: ${SUPERVISOR_SECRET}
+      BRIDGE_URL: "http://bridge:8091"
+      BRIDGE_SECRET: ${BRIDGE_SECRET}
+      ZULIP_STREAM: ${ZULIP_STREAM:-general}
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:
@@ -149,7 +152,30 @@ services:
     depends_on:
       - control-plane
 
-  # bridge:        [core], stateless zulip <-> control-plane translation — M3
+  bridge:
+    build:
+      context: ..
+      dockerfile: deploy/bridge.Dockerfile
+    networks: [core] # outbound only to Zulip Cloud — no inbound route needed (docs/adr/0004)
+    environment:
+      BRIDGE_ADDR: ":8091"
+      BRIDGE_SECRET: ${BRIDGE_SECRET}
+      CONTROL_PLANE_URL: "http://control-plane:8080"
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      ZULIP_SITE: ${ZULIP_SITE}
+      ZULIP_BOT_EMAIL: ${ZULIP_BOT_EMAIL}
+      ZULIP_BOT_API_KEY: ${ZULIP_BOT_API_KEY}
+      ZULIP_STREAM: ${ZULIP_STREAM:-general}
+    healthcheck:
+      test: ["CMD", "/bridge", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
   # webapp:        [edge, core] — M7
   # egress-proxy:  [runners, egress], filters PUT /repos/*/pulls/*/merge — M4
 

@@ -1,16 +1,41 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
 	"agentfleet/internal/policy"
+	"agentfleet/internal/store"
+	db "agentfleet/internal/store/gen"
 )
 
 type dispatchToolResponse struct {
 	Allow  bool   `json:"allow"`
 	Reason string `json:"reason,omitempty"`
 	Rule   string `json:"rule,omitempty"`
+	// Result carries a tool's own return value for the handful of mediated
+	// tools that do work after an allow (M3's ask_human is the first — see
+	// askHumanArgs below). Every other mediated tool's dispatch stops at
+	// recording the decision (M2's documented stopping point), so Result is
+	// omitted for them.
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+// askHumanArgs is ask_human's argument shape (development-plan.md §6:
+// "ask_human(question, kind, options?, context_ref?)"). context_ref is
+// accepted (ignored by encoding/json, not declared here) — D8's hash-pinned
+// context resolution is af-context's job, not this handler's.
+type askHumanArgs struct {
+	Question  string   `json:"question"`
+	Kind      string   `json:"kind"`
+	Options   []string `json:"options,omitempty"`
+	Addressee *string  `json:"addressee,omitempty"`
+}
+
+type askHumanResult struct {
+	QuestionID string `json:"question_id"`
 }
 
 // dispatchTool is the mediated-tool-dispatch endpoint
@@ -63,10 +88,66 @@ func (s *Server) dispatchTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := http.StatusOK
 	if !decision.Allow {
-		status = http.StatusForbidden
+		writeJSON(w, http.StatusForbidden, dispatchToolResponse{Allow: false, Reason: decision.Reason, Rule: decision.Rule})
+
+		return
 	}
 
-	writeJSON(w, status, dispatchToolResponse{Allow: decision.Allow, Reason: decision.Reason, Rule: decision.Rule})
+	if tool == "ask_human" {
+		result, err := s.askHuman(r, run, args)
+		if err != nil {
+			writeTransitionErr(w, s.Log, err)
+
+			return
+		}
+
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			writeTransitionErr(w, s.Log, err)
+
+			return
+		}
+
+		writeJSON(w, http.StatusOK, dispatchToolResponse{Allow: true, Rule: decision.Rule, Result: resultJSON})
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, dispatchToolResponse{Allow: true, Rule: decision.Rule})
+}
+
+// askHuman is dispatchTool's post-allow action for the one mediated tool M3
+// gives real behavior: it inserts the question row, transitions the task to
+// BLOCKED_ON_HUMAN, and enqueues the zulip.question notification, all via
+// Store.ApplyAsk's single transaction. A malformed body, an unrecognized
+// kind, or a feature that already has an open question all return through
+// writeTransitionErr's mapping (store.ErrQuestionAlreadyOpen -> 409) rather
+// than a bare 500.
+func (s *Server) askHuman(r *http.Request, run db.Run, rawArgs []byte) (askHumanResult, error) {
+	var args askHumanArgs
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return askHumanResult{}, fmt.Errorf("ask_human: parsing arguments: %w", err)
+	}
+
+	options := []byte(`[]`)
+	if len(args.Options) > 0 {
+		marshaled, err := json.Marshal(args.Options)
+		if err != nil {
+			return askHumanResult{}, fmt.Errorf("ask_human: marshaling options: %w", err)
+		}
+
+		options = marshaled
+	}
+
+	result, err := s.Store.ApplyAsk(r.Context(), s.Redact, store.AskRequest{
+		RunID: run.ID, TaskID: run.TaskID,
+		Kind: args.Kind, Body: args.Question, Options: options, Addressee: args.Addressee,
+		Actor: "run:" + run.ID.String(),
+	})
+	if err != nil {
+		return askHumanResult{}, err
+	}
+
+	return askHumanResult{QuestionID: result.Question.ID.String()}, nil
 }

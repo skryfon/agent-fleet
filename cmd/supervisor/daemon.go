@@ -87,11 +87,14 @@ func (d *daemon) healthz(w http.ResponseWriter, r *http.Request) {
 // client, not a Go dependency; the two processes' only contract is this
 // wire shape).
 type launchRequest struct {
-	RunID   string `json:"run_id"`
-	Token   string `json:"token"`
-	Task    string `json:"task"`
-	RepoURL string `json:"repo_url"`
-	Role    string `json:"role"`
+	RunID           string `json:"run_id"`
+	TaskID          string `json:"task_id"`
+	Token           string `json:"token"`
+	Task            string `json:"task"`
+	RepoURL         string `json:"repo_url"`
+	Role            string `json:"role"`
+	ResumeSessionID string `json:"resume_session_id,omitempty"`
+	Answer          string `json:"answer,omitempty"`
 }
 
 func (d *daemon) launch(w http.ResponseWriter, r *http.Request) {
@@ -198,26 +201,41 @@ func (d *daemon) kill(w http.ResponseWriter, r *http.Request) {
 // spec builds the runner container's create spec, carrying
 // development-plan.md §8's security posture: read-only rootfs, tmpfs /tmp,
 // no capabilities, resource limits, no host mounts.
+//
+// The workspace volume is keyed by TASK id, not run id (M3 design decision):
+// a resurrect-and-resume launch gets a brand-new run id (internal/supervisor.
+// RunLaunch always inserts a fresh run row) but must re-attach the SAME git
+// worktree and dsh session state a prior run in this same task left on
+// disk — those live under this one volume, and deploy/runner-entrypoint.sh's
+// own resume branch is what decides whether to initialize or reuse them.
 func (d *daemon) spec(req launchRequest) podman.Spec {
+	env := map[string]string{
+		"RUN_ID":             req.RunID,
+		"TASK_ID":            req.TaskID,
+		"TASK":               req.Task,
+		"REPO_URL":           req.RepoURL,
+		"GH_TOKEN":           d.cfg.ghToken,
+		"OMNI_ROUTE_API_KEY": d.cfg.omniRouteAPIKey,
+		"CONTROL_PLANE_URL":  d.cfg.controlPlaneURL,
+		"AF_RUN_TOKEN":       req.Token,
+	}
+
+	if req.ResumeSessionID != "" {
+		env["AF_RESUME_SESSION_ID"] = req.ResumeSessionID
+		env["AF_RESUME_ANSWER"] = req.Answer
+	}
+
 	return podman.Spec{
-		Name:  containerName(req.RunID),
-		Image: d.cfg.runnerImage,
-		Env: map[string]string{
-			"RUN_ID":             req.RunID,
-			"TASK":               req.Task,
-			"REPO_URL":           req.RepoURL,
-			"GH_TOKEN":           d.cfg.ghToken,
-			"OMNI_ROUTE_API_KEY": d.cfg.omniRouteAPIKey,
-			"CONTROL_PLANE_URL":  d.cfg.controlPlaneURL,
-			"AF_RUN_TOKEN":       req.Token,
-		},
+		Name:            containerName(req.RunID),
+		Image:           d.cfg.runnerImage,
+		Env:             env,
 		Labels:          map[string]string{podman.RunLabel: req.RunID},
 		Netns:           podman.NetNS{NSMode: "bridge"},
 		ReadOnly:        true,
 		NoNewPrivileges: true,
 		CapDrop:         []string{"ALL"},
 		Volumes: []podman.NamedVolume{
-			{Name: "agentfleet-run-" + req.RunID, Dest: "/workspace"},
+			{Name: "agentfleet-task-" + req.TaskID, Dest: "/workspace"},
 		},
 		ResourceLimits: &podman.ResourceLimits{
 			CPU:    &podman.LinuxCPU{Period: 100000, Quota: 200000}, // 2 CPUs

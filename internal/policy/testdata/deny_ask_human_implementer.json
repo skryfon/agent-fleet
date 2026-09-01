@@ -1,0 +1,15 @@
+{
+  "name": "deny_ask_human_implementer",
+  "request": {
+    "role": "implementer",
+    "tool": "ask_human",
+    "args": {"kind": "confirm"},
+    "manifest": {
+      "roles": {
+        "orchestrator": {"mediated_tools": ["ask_human", "spawn_worker"]},
+        "implementer": {"mediated_tools": ["gh_pr_create"]}
+      }
+    }
+  },
+  "want": {"allow": false, "rule": "not_allow_listed"}
+}

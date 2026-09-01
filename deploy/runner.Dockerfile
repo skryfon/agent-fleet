@@ -78,6 +78,9 @@ RUN node /opt/deepseek-harness/apps/cli/lib/bin.js plugin --profile agentfleet-r
       "link:/opt/runner/packages/af-policy" \
       "link:/opt/runner/packages/af-github" \
       "link:/opt/runner/packages/af-worktree" \
+      "link:/opt/runner/packages/af-control" \
+      "link:/opt/runner/packages/af-ask-human" \
+      "link:/opt/runner/packages/af-resume" \
     && node -e "const fs=require('node:fs'); const p='$DSH_HOME/profiles/agentfleet-runner/package.json'; const m=JSON.parse(fs.readFileSync(p)); m.dsh.profile.patchReload='startup'; fs.writeFileSync(p, JSON.stringify(m,null,2)+'\n')"
 COPY deploy/runner-settings.yaml $DSH_HOME/settings.yaml
 

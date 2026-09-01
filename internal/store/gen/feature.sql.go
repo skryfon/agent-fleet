@@ -92,6 +92,30 @@ func (q *Queries) GetFeatureByProjectSlug(ctx context.Context, arg GetFeatureByP
 	return i, err
 }
 
+const getFeatureByZulipTopic = `-- name: GetFeatureByZulipTopic :one
+SELECT id, project_id, slug, spec_ref, zulip_topic, state, created_at, tasks_md_sha256 FROM feature WHERE zulip_topic = $1 OR (zulip_topic IS NULL AND slug = $1)
+`
+
+// cmd/bridge's inbound path (M3): resolve a Zulip topic reply back to the
+// feature it belongs to. Falls back to matching the feature's own slug
+// (deploy/zulip/README.md §6: "the feature slug ... is a reasonable
+// default" when zulip_topic was never explicitly set at feature creation).
+func (q *Queries) GetFeatureByZulipTopic(ctx context.Context, zulipTopic *string) (Feature, error) {
+	row := q.db.QueryRow(ctx, getFeatureByZulipTopic, zulipTopic)
+	var i Feature
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Slug,
+		&i.SpecRef,
+		&i.ZulipTopic,
+		&i.State,
+		&i.CreatedAt,
+		&i.TasksMdSha256,
+	)
+	return i, err
+}
+
 const listFeaturesByProject = `-- name: ListFeaturesByProject :many
 SELECT id, project_id, slug, spec_ref, zulip_topic, state, created_at, tasks_md_sha256 FROM feature WHERE project_id = $1 ORDER BY created_at DESC
 `

@@ -50,7 +50,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 		AdminToken: adminToken,
 		Manifest: policy.Manifest{
 			Roles: map[string]policy.Role{
-				"implementer": {MediatedTools: []string{"spawn_worker"}},
+				"implementer":  {MediatedTools: []string{"spawn_worker"}},
+				"orchestrator": {MediatedTools: []string{"ask_human"}},
 			},
 		},
 	}
@@ -114,7 +115,9 @@ func TestAuthAdminRejectsMissingOrWrongToken(t *testing.T) {
 func TestDeferredRoutesReturn501(t *testing.T) {
 	ts, _ := newTestServer(t)
 
-	for _, path := range []string{"/v1/questions/" + uuid.NewString() + "/answer", "/v1/approvals", "/v1/admin/pause"} {
+	// POST /v1/questions/{id}/answer is real as of M3 — see
+	// question_integration_test.go for its own coverage, not this list.
+	for _, path := range []string{"/v1/approvals", "/v1/admin/pause"} {
 		resp, _ := doJSON(t, http.MethodPost, ts.URL+path, adminToken, nil)
 		if resp.StatusCode != http.StatusNotImplemented {
 			t.Errorf("%s: status = %d, want 501", path, resp.StatusCode)
@@ -325,6 +328,50 @@ func newTestRun(t *testing.T, st *store.Store) (uuid.UUID, string) {
 
 	run, err := st.Q().InsertRun(ctx, db.InsertRunParams{
 		TaskID: task.ID, Role: "implementer", Model: "test-model", State: "PENDING", TokenHash: sum[:],
+	})
+	if err != nil {
+		t.Fatalf("InsertRun: %v", err)
+	}
+
+	return run.ID, token
+}
+
+// newTestRunningRun is newTestRun's counterpart for handlers that need the
+// task already RUNNING (ask_human's own precondition — TrAsked only fires
+// from RUNNING) with a caller-chosen role, since ask_human is gated to
+// "orchestrator" by the test server's manifest (D7).
+func newTestRunningRun(t *testing.T, st *store.Store, role string) (uuid.UUID, string) {
+	t.Helper()
+
+	ctx := t.Context()
+	suffix := uuid.NewString()
+
+	proj, err := st.Q().CreateProject(ctx, db.CreateProjectParams{
+		Slug: "run-fixture-" + suffix, ManifestRef: "r", ManifestHash: "h", Repos: []string{}, Status: "ACTIVE",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	feat, err := st.Q().CreateFeature(ctx, db.CreateFeatureParams{ProjectID: proj.ID, Slug: "f-" + suffix, State: "OPEN"})
+	if err != nil {
+		t.Fatalf("CreateFeature: %v", err)
+	}
+
+	task, err := st.Q().InsertTask(ctx, db.InsertTaskParams{
+		FeatureID: feat.ID, Lane: "direct", Title: "t", Intent: "i",
+		AcceptanceCriteria: []byte(`[]`), Touches: []string{}, DependsOn: []uuid.UUID{},
+		SpecRefs: []byte(`[]`), State: "RUNNING",
+	})
+	if err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	token := "run-token-" + suffix
+	sum := sha256.Sum256([]byte(token))
+
+	run, err := st.Q().InsertRun(ctx, db.InsertRunParams{
+		TaskID: task.ID, Role: role, Model: "test-model", State: "RUNNING", TokenHash: sum[:],
 	})
 	if err != nil {
 		t.Fatalf("InsertRun: %v", err)

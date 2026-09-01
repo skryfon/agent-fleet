@@ -155,7 +155,7 @@ var taskTable = []TaskTransition{
 	{
 		From: TaskRunning, Trigger: TrRunExitedOK, To: TaskReview,
 		EventKind: "task_in_review",
-		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyReason: "review"}},
+		Effects:   []EffectSpec{{Topic: "zulip.review", KeyReason: "review"}},
 	},
 	{
 		// The QUEUED<-RUNNING loop-back the §3 diagram draws: a run that
@@ -175,12 +175,16 @@ var taskTable = []TaskTransition{
 		// from FAILED).
 		From: TaskRunning, Trigger: TrRunExitedErrFinal, To: TaskFailed,
 		EventKind: "task_failed",
-		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyReason: "failed"}},
+		Effects:   []EffectSpec{{Topic: "zulip.failed", KeyReason: "failed"}},
 	},
 	{
 		From: TaskRunning, Trigger: TrAsked, To: TaskBlockedOnHuman,
 		EventKind: "task_blocked",
-		Effects:   []EffectSpec{{Topic: "zulip.notify", KeyReason: "question"}},
+		// zulip.question, not the shared zulip.notify topic the other two
+		// zulip effects use: internal/zulip.Handlers.Notify needs to know
+		// this carries a question_id (effectPayload.QuestionID) without
+		// string-parsing the outbox key's KeyReason prefix (M3 design note).
+		Effects: []EffectSpec{{Topic: "zulip.question", KeyReason: "question"}},
 	},
 	{
 		From: TaskBlockedOnHuman, Trigger: TrAnswered, To: TaskRunning,

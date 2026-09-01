@@ -59,6 +59,13 @@ RETURNING *;
 -- "stale runs" job (P8) reads last_heartbeat_at back out via GetRunByID.
 UPDATE run SET last_heartbeat_at = now() WHERE id = $1;
 
+-- name: SetRunDshSessionID :exec
+-- POST /v1/runs/{id}/checkpoint's own M3 payload field: af-ask-human's
+-- checkpoint-and-exit call reports the dsh session id af-resume will later
+-- pass to agents.resume() (internal/supervisor.RunLaunch reads it back out
+-- via GetRunByID on the resume launch path).
+UPDATE run SET dsh_session_id = $2 WHERE id = $1;
+
 -- name: IncrementRunAttempt :one
 UPDATE run SET attempt = attempt + 1, updated_at = now() WHERE id = $1
 RETURNING *;

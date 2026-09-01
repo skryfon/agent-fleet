@@ -45,10 +45,18 @@ func NewClient(baseURL, secret string, httpClient *http.Client) *Client {
 // internal/podman.Spec needs to create and start one runner container.
 type LaunchRequest struct {
 	RunID   string `json:"run_id"`
-	Token   string `json:"token"` // plaintext per-run bearer token, never logged or persisted here
-	Task    string `json:"task"`  // the prompt handed to the headless agent
+	TaskID  string `json:"task_id"` // names the shared workspace volume/branch — see cmd/supervisor's spec()
+	Token   string `json:"token"`   // plaintext per-run bearer token, never logged or persisted here
+	Task    string `json:"task"`    // the prompt handed to the headless agent
 	RepoURL string `json:"repo_url"`
 	Role    string `json:"role"`
+	// ResumeSessionID/Answer, when both set, make this a resurrect-and-resume
+	// launch (M3, development-plan.md §6) rather than a fresh one: the
+	// container's af-resume plugin resumes ResumeSessionID and delivers
+	// Answer instead of running dsh-headless's own create-and-followup path.
+	// Both empty on an ordinary first launch.
+	ResumeSessionID string `json:"resume_session_id,omitempty"`
+	Answer          string `json:"answer,omitempty"`
 }
 
 // KillRequest is the daemon's POST /kill body.

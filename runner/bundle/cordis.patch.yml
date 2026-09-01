@@ -1,18 +1,37 @@
 # dsh-bundle-agentfleet — stacks the af-* plugins over dsh-base + dsh-headless
 # to form the agentfleet-runner profile (development-plan.md §5, §7).
 #
-# M1: af-policy, af-github, and af-worktree are real plugins. af-control and
-# af-context remain comment-only stubs — disabled here so `--dump-config`
-# shows no PENDING fiber for a plugin whose apply() does nothing yet; each
-# flips on as its milestone lands (M2).
+# M1: af-policy, af-github, and af-worktree are real plugins. M3: af-control,
+# af-ask-human, and af-resume join them — af-context remains a comment-only
+# stub, disabled, until M1/M2's context-hash work actually lands.
 #
 # The kill criterion (development-plan.md M1: a deny from af-policy must not
 # require patching dsh-base) is proven — see runner/README.md.
+#
+# af-resume/headless-runner are mutually exclusive boot paths, both gated on
+# the SAME env var so they can never both mount: AF_RESUME_SESSION_ID set
+# means a resurrect-and-resume launch (M3, internal/supervisor.RunLaunch),
+# unset means an ordinary fresh launch. Both dsh-headless rows disable
+# together — headless-startup parses the TASK cmdline positional and
+# `program.error()`s (process-exiting) on an empty one independently of
+# whether headless-runner itself is mounted, so disabling only the runner
+# would still crash a resume boot before af-resume ever ran. Both rows
+# belong to dsh-bundle-headless, not dsh-base — patching them here from our
+# own bundle is the sanctioned pattern (D14: "everything AgentFleet-specific
+# lives in our own bundle"), not the dsh-base row patch D14 gates.
+- id: headless-startup
+  disabled: !!js Boolean(process.env.AF_RESUME_SESSION_ID)
+
+- id: headless-runner
+  disabled: !!js Boolean(process.env.AF_RESUME_SESSION_ID)
 
 - insert:
     - id: af-control
       name: '@agentfleet/af-control'
-      disabled: true # stub; wired in M2
+      config:
+        controlPlaneURL: !!js process.env.CONTROL_PLANE_URL
+        runID: !!js process.env.RUN_ID
+        runToken: !!js process.env.AF_RUN_TOKEN
 
     - id: af-context
       name: '@agentfleet/af-context'
@@ -35,7 +54,16 @@
 
     - id: af-ask-human
       name: '@agentfleet/af-ask-human'
-      disabled: true # enabled in M3
+
+    - id: af-resume
+      name: '@agentfleet/af-resume'
+      # A bare leading `!` after `!!js ` reads as a second YAML tag
+      # ("duplication of a tag property") — verified live. `=== undefined`
+      # says the same thing without one.
+      disabled: !!js process.env.AF_RESUME_SESSION_ID === undefined
+      config:
+        resumeSessionID: !!js process.env.AF_RESUME_SESSION_ID
+        answer: !!js process.env.AF_RESUME_ANSWER
 
     - id: af-budget
       name: '@agentfleet/af-budget'

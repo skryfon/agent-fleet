@@ -88,13 +88,24 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("POST /v1/runs/{id}/container", s.authSupervisor(s.containerReport))
 
-	// Deferred routes — development-plan.md's own disposition table: the
-	// envelope/shape these will eventually carry exists elsewhere already
-	// (Question rows, the inbox's answer envelope), only the
-	// producing/deciding side is deferred to M3 (answer) / M4 (approvals,
-	// admin pause — meaningless before af-budget's breaker exists). A
-	// real 501, not a faked 200.
-	mux.HandleFunc("POST /v1/questions/{id}/answer", s.authAdmin(notImplemented))
+	// POST /v1/questions/{id}/answer (M3): authAdmin for now, same as every
+	// other human-facing route — cmd/bridge (M3 Phase 3) holds ADMIN_TOKEN
+	// and calls this after resolving the Zulip sender's identity itself.
+	// Tightening this to a dedicated authBridge/BRIDGE_SECRET scope once the
+	// bridge is a real separate credential boundary is a documented follow-up
+	// (// ponytail: shared admin auth, split when the bridge needs its own
+	// blast-radius boundary), not required for M3's own done-condition.
+	mux.HandleFunc("POST /v1/questions/{id}/answer", s.authAdmin(s.answerQuestion))
+	// GET /v1/questions?zulip_topic=... and GET /v1/identities/by-zulip/{id}
+	// are cmd/bridge's own two read lookups (M3 Phase 3) — same authAdmin
+	// scope as the answer route above, same documented follow-up to split
+	// once the bridge needs its own credential boundary.
+	mux.HandleFunc("GET /v1/questions", s.authAdmin(s.listQuestionsByZulipTopic))
+	mux.HandleFunc("GET /v1/identities/by-zulip/{zulip_user_id}", s.authAdmin(s.getIdentityByZulip))
+
+	// Deferred routes — development-plan.md's own disposition table: M4
+	// (approvals, admin pause — meaningless before af-budget's breaker
+	// exists). A real 501, not a faked 200.
 	mux.HandleFunc("POST /v1/approvals", s.authAdmin(notImplemented))
 	mux.HandleFunc("POST /v1/admin/pause", s.authAdmin(notImplemented))
 

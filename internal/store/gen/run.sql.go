@@ -435,6 +435,24 @@ func (q *Queries) SetRunContainerStarted(ctx context.Context, arg SetRunContaine
 	return i, err
 }
 
+const setRunDshSessionID = `-- name: SetRunDshSessionID :exec
+UPDATE run SET dsh_session_id = $2 WHERE id = $1
+`
+
+type SetRunDshSessionIDParams struct {
+	ID           uuid.UUID `json:"id"`
+	DshSessionID *string   `json:"dsh_session_id"`
+}
+
+// POST /v1/runs/{id}/checkpoint's own M3 payload field: af-ask-human's
+// checkpoint-and-exit call reports the dsh session id af-resume will later
+// pass to agents.resume() (internal/supervisor.RunLaunch reads it back out
+// via GetRunByID on the resume launch path).
+func (q *Queries) SetRunDshSessionID(ctx context.Context, arg SetRunDshSessionIDParams) error {
+	_, err := q.db.Exec(ctx, setRunDshSessionID, arg.ID, arg.DshSessionID)
+	return err
+}
+
 const setRunExited = `-- name: SetRunExited :one
 UPDATE run
 SET state = $2, exit_code = $3, ended_at = now(),

@@ -1,0 +1,15 @@
+{
+  "name": "allow_ask_human_orchestrator",
+  "request": {
+    "role": "orchestrator",
+    "tool": "ask_human",
+    "args": {"kind": "confirm"},
+    "manifest": {
+      "roles": {
+        "orchestrator": {"mediated_tools": ["ask_human", "spawn_worker"]},
+        "implementer": {"mediated_tools": ["gh_pr_create"]}
+      }
+    }
+  },
+  "want": {"allow": true}
+}

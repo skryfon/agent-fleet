@@ -30,6 +30,9 @@ type Querier interface {
 	// duplicate counts back to af-control (POST /v1/runs/{id}/events' response
 	// body).
 	AppendMirrorEvents(ctx context.Context, arg AppendMirrorEventsParams) (int64, error)
+	// A run that's cancelled or killed shouldn't leave a dangling OPEN question
+	// blocking its feature's one-open-per-topic slot forever.
+	CancelQuestionsForRun(ctx context.Context, runID uuid.UUID) ([]Question, error)
 	// SKIP LOCKED + the available_at lease bump means a second relay process
 	// (or a restart racing the old one's in-flight work) never double-claims a
 	// row — internal/outbox.Relay (P3) is the only caller.
@@ -39,6 +42,10 @@ type Querier interface {
 	CreateFeature(ctx context.Context, arg CreateFeatureParams) (Feature, error)
 	CreateIdentity(ctx context.Context, arg CreateIdentityParams) (Identity, error)
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
+	// feature_id (0003_questions.up.sql) is what question_one_open_per_feature_uk
+	// enforces against — a second ask_human call for a feature with an already-
+	// OPEN question fails this INSERT with a unique_violation, which
+	// internal/store.ApplyAsk turns into ErrQuestionAlreadyOpen.
 	CreateQuestion(ctx context.Context, arg CreateQuestionParams) (Question, error)
 	// key renders from domain.EffectSpec.RenderKey — a transition retried after
 	// a crash re-derives the identical key, so this INSERT is a no-op on retry.
@@ -57,6 +64,11 @@ type Querier interface {
 	GetActiveRunForTask(ctx context.Context, taskID uuid.UUID) (Run, error)
 	GetFeatureByID(ctx context.Context, id uuid.UUID) (Feature, error)
 	GetFeatureByProjectSlug(ctx context.Context, arg GetFeatureByProjectSlugParams) (Feature, error)
+	// cmd/bridge's inbound path (M3): resolve a Zulip topic reply back to the
+	// feature it belongs to. Falls back to matching the feature's own slug
+	// (deploy/zulip/README.md §6: "the feature slug ... is a reasonable
+	// default" when zulip_topic was never explicitly set at feature creation).
+	GetFeatureByZulipTopic(ctx context.Context, zulipTopic *string) (Feature, error)
 	GetIdentityByGithubLogin(ctx context.Context, githubLogin *string) (Identity, error)
 	GetIdentityByZulipUserID(ctx context.Context, zulipUserID *string) (Identity, error)
 	// internal/supervisor's run.launch handler (P5) needs exactly this to build
@@ -67,6 +79,9 @@ type Querier interface {
 	GetProjectByID(ctx context.Context, id uuid.UUID) (Project, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error)
+	// Locks the row for internal/api.answerQuestion's read-check-write (must
+	// still be OPEN) the same way GetTaskForUpdate/GetRunForUpdate lock theirs.
+	GetQuestionForUpdate(ctx context.Context, id uuid.UUID) (Question, error)
 	GetRunByID(ctx context.Context, id uuid.UUID) (Run, error)
 	GetRunForUpdate(ctx context.Context, id uuid.UUID) (Run, error)
 	GetTaskByFeatureExternalRef(ctx context.Context, arg GetTaskByFeatureExternalRefParams) (Task, error)
@@ -132,22 +147,45 @@ type Querier interface {
 	// scan, not a filter-then-sort.
 	ListEventsSince(ctx context.Context, arg ListEventsSinceParams) ([]Event, error)
 	ListFeaturesByProject(ctx context.Context, projectID uuid.UUID) ([]Feature, error)
-	// The inbox long-poll (GET /v1/runs/{id}/inbox, P4) reads this to build the
-	// answer envelope once M3's af-ask-human lands; the envelope shape exists
-	// now, only the producer side (M3) is deferred.
+	// The Zulip bridge's inbound path resolves a topic reply to the one open
+	// question a feature can have (question_one_open_per_feature_uk).
+	ListOpenQuestionsByFeature(ctx context.Context, featureID pgtype.UUID) ([]Question, error)
+	// The inbox long-poll (GET /v1/runs/{id}/inbox) reads this to build the
+	// answer envelope.
 	ListOpenQuestionsByRun(ctx context.Context, runID uuid.UUID) ([]Question, error)
+	// internal/questions' timeout-ladder sweeper: every still-OPEN question
+	// past its next unfired rung. The sweeper itself decides nudge/escalate/park
+	// from asked_at/nudged_at/escalated_at; this just narrows the scan to rows
+	// that could possibly be due, using the earliest rung (4h) as the floor.
+	ListOverdueQuestions(ctx context.Context, askedAt pgtype.Timestamptz) ([]Question, error)
 	ListProjects(ctx context.Context) ([]Project, error)
 	ListTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error)
 	ListTasksByState(ctx context.Context, state string) ([]Task, error)
 	MarkOutboxPublished(ctx context.Context, id int64) error
+	MarkQuestionEscalated(ctx context.Context, id uuid.UUID) (Question, error)
+	MarkQuestionNudged(ctx context.Context, id uuid.UUID) (Question, error)
 	// The value af-control seeds highWaterSeq from on (re)connect — never
 	// guessed client-side (runner/packages/af-control's own comment on the same
 	// rule).
 	MirrorHighWaterSeq(ctx context.Context, runID uuid.UUID) (int64, error)
 	RescheduleOutbox(ctx context.Context, arg RescheduleOutboxParams) error
 	SetFeatureTasksMdSHA256(ctx context.Context, arg SetFeatureTasksMdSHA256Params) error
+	// internal/zulip.Handlers.Notify calls this after a successful post, making
+	// a redelivered outbox row's re-post a no-op (outbox.Handler's idempotency
+	// contract) rather than a duplicate Zulip message.
+	SetQuestionZulipMessageID(ctx context.Context, arg SetQuestionZulipMessageIDParams) (Question, error)
 	SetRunContainerStarted(ctx context.Context, arg SetRunContainerStartedParams) (Run, error)
+	// POST /v1/runs/{id}/checkpoint's own M3 payload field: af-ask-human's
+	// checkpoint-and-exit call reports the dsh session id af-resume will later
+	// pass to agents.resume() (internal/supervisor.RunLaunch reads it back out
+	// via GetRunByID on the resume launch path).
+	SetRunDshSessionID(ctx context.Context, arg SetRunDshSessionIDParams) error
 	SetRunExited(ctx context.Context, arg SetRunExitedParams) (Run, error)
+	// Timeouts never auto-answer (development-plan.md §6) — this only marks the
+	// question TIMED_OUT; the accompanying task transition (TrPark) is a
+	// separate call in the same transaction, mirroring AnswerQuestion/
+	// TrAnswered's split.
+	TimeoutQuestion(ctx context.Context, id uuid.UUID) (Question, error)
 	// POST /v1/runs/{id}/checkpoint (P4) calls this; internal/reconcile's
 	// "stale runs" job (P8) reads last_heartbeat_at back out via GetRunByID.
 	TouchRunHeartbeat(ctx context.Context, id uuid.UUID) error

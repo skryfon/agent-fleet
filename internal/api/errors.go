@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"agentfleet/internal/domain"
+	"agentfleet/internal/store"
 )
 
 type errorBody struct {
@@ -25,17 +26,21 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errorBody{Error: msg})
 }
 
-// writeTransitionErr renders domain.ErrIllegalTransition as 409 (the state
-// machine's own "illegal transitions error, never silently no-op" contract
-// surfaced to an HTTP caller), pgx.ErrNoRows (a GetTaskForUpdate/
-// GetRunForUpdate miss inside a transition call) as 404, and anything else
-// as a logged 500 with a generic client-facing message — a raw pgx/
-// constraint error can name schema/column detail that has no business
-// leaving the process, even to an admin-token holder (flagged in code
-// review: writeDBErr below had this same gap for the plain CRUD handlers).
+// writeTransitionErr renders domain.ErrIllegalTransition and the question
+// lifecycle's own sentinels (store.ErrQuestionAlreadyOpen,
+// store.ErrQuestionNotOpen — both "the caller's request conflicts with
+// current state," the same shape as an illegal transition) as 409,
+// pgx.ErrNoRows (a GetTaskForUpdate/GetRunForUpdate/GetQuestionForUpdate
+// miss inside a transition call) as 404, and anything else as a logged 500
+// with a generic client-facing message — a raw pgx/constraint error can name
+// schema/column detail that has no business leaving the process, even to an
+// admin-token holder (flagged in code review: writeDBErr below had this same
+// gap for the plain CRUD handlers).
 func writeTransitionErr(w http.ResponseWriter, log *slog.Logger, err error) {
 	switch {
-	case errors.Is(err, domain.ErrIllegalTransition):
+	case errors.Is(err, domain.ErrIllegalTransition),
+		errors.Is(err, store.ErrQuestionAlreadyOpen),
+		errors.Is(err, store.ErrQuestionNotOpen):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "not found")

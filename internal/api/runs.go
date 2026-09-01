@@ -9,6 +9,7 @@ import (
 
 	"agentfleet/internal/domain"
 	"agentfleet/internal/store"
+	db "agentfleet/internal/store/gen"
 )
 
 type mirrorEventRequest struct {
@@ -69,14 +70,40 @@ func (s *Server) postRunEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// checkpointRequest's dsh_session_id field is M3's own consumer of this
+// endpoint: af-ask-human's checkpoint-and-exit call (development-plan.md
+// §6) reports the run's dsh session id here so a later resurrect-and-resume
+// launch (internal/supervisor.RunLaunch) can read it back via GetRunByID.
+// An empty/absent body (a plain heartbeat, or M2's own tests) is valid —
+// only a non-empty dsh_session_id triggers the extra write.
+type checkpointRequest struct {
+	DshSessionID string `json:"dsh_session_id"`
+}
+
 // checkpoint is both the run's heartbeat (internal/reconcile's stale-run
-// sweep, P8, reads last_heartbeat_at back out) and, per the plan, where a
-// run's own checkpoint blob would land — the request body's checkpoint
-// field is accepted and currently discarded; wiring it into run.checkpoint
-// is a small follow-up once a consumer of that column exists, not required
-// for M2's own done-condition.
+// sweep, P8, reads last_heartbeat_at back out) and, as of M3, where a run's
+// dsh session id lands for a later resume — see checkpointRequest.
 func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request) {
 	run, _ := runFromContext(r.Context())
+
+	var req checkpointRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+
+			return
+		}
+	}
+
+	if req.DshSessionID != "" {
+		if err := s.Store.Q().SetRunDshSessionID(r.Context(), db.SetRunDshSessionIDParams{
+			ID: run.ID, DshSessionID: &req.DshSessionID,
+		}); err != nil {
+			writeTransitionErr(w, s.Log, err)
+
+			return
+		}
+	}
 
 	if err := s.Store.Q().TouchRunHeartbeat(r.Context(), run.ID); err != nil {
 		writeTransitionErr(w, s.Log, err)
@@ -161,16 +188,45 @@ func (s *Server) reportContainerExited(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	runTrigger, taskTrigger := domain.TrRunExitedOK, domain.TrRunExitedOK
-	if exitCode != 0 {
-		runTrigger = domain.TrRunFailed
+	task, err := s.Store.Q().GetTaskByID(r.Context(), run.TaskID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
 
-		task, err := s.Store.Q().GetTaskByID(r.Context(), run.TaskID)
+		return
+	}
+
+	// M3's checkpoint-and-exit: af-ask-human's own exit (development-plan.md
+	// §6) leaves the task already BLOCKED_ON_HUMAN, via Store.ApplyAsk, well
+	// before this container-exit report ever arrives — there is no
+	// task-level reaction left to make (see ApplyRunTransition's own doc
+	// comment on why ApplyRunExit's usual "a run exiting always has a
+	// task-level reaction" assumption doesn't hold here). Run-only, whatever
+	// the exit code: a crash mid-wait leaves the question just as open as a
+	// clean exit does, and either way a human answering later is what
+	// resumes the task, not this report.
+	if task.State == string(domain.TaskBlockedOnHuman) {
+		runTrigger := domain.TrRunExitedOK
+		if exitCode != 0 {
+			runTrigger = domain.TrRunFailed
+		}
+
+		transition, err := s.Store.ApplyRunTransition(r.Context(), s.Redact, store.RunTransitionRequest{
+			RunID: runID, Trigger: runTrigger, Actor: "supervisor", ExitCode: &exitCode,
+		})
 		if err != nil {
-			writeError(w, http.StatusNotFound, "task not found")
+			writeTransitionErr(w, s.Log, err)
 
 			return
 		}
+
+		writeJSON(w, http.StatusOK, transition)
+
+		return
+	}
+
+	runTrigger, taskTrigger := domain.TrRunExitedOK, domain.TrRunExitedOK
+	if exitCode != 0 {
+		runTrigger = domain.TrRunFailed
 
 		if task.Attempt < maxTaskAttempts {
 			taskTrigger = domain.TrRunExitedErrRetryable

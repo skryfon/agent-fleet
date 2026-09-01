@@ -97,18 +97,22 @@ type Project struct {
 }
 
 type Question struct {
-	ID         uuid.UUID          `json:"id"`
-	RunID      uuid.UUID          `json:"run_id"`
-	TaskID     uuid.UUID          `json:"task_id"`
-	Kind       string             `json:"kind"`
-	Body       string             `json:"body"`
-	Options    []byte             `json:"options"`
-	Addressee  *string            `json:"addressee"`
-	State      string             `json:"state"`
-	Answer     *string            `json:"answer"`
-	AnsweredBy *string            `json:"answered_by"`
-	AskedAt    pgtype.Timestamptz `json:"asked_at"`
-	AnsweredAt pgtype.Timestamptz `json:"answered_at"`
+	ID             uuid.UUID          `json:"id"`
+	RunID          uuid.UUID          `json:"run_id"`
+	TaskID         uuid.UUID          `json:"task_id"`
+	Kind           string             `json:"kind"`
+	Body           string             `json:"body"`
+	Options        []byte             `json:"options"`
+	Addressee      *string            `json:"addressee"`
+	State          string             `json:"state"`
+	Answer         *string            `json:"answer"`
+	AnsweredBy     *string            `json:"answered_by"`
+	AskedAt        pgtype.Timestamptz `json:"asked_at"`
+	AnsweredAt     pgtype.Timestamptz `json:"answered_at"`
+	FeatureID      pgtype.UUID        `json:"feature_id"`
+	ZulipMessageID *string            `json:"zulip_message_id"`
+	NudgedAt       pgtype.Timestamptz `json:"nudged_at"`
+	EscalatedAt    pgtype.Timestamptz `json:"escalated_at"`
 }
 
 type Run struct {

@@ -9,12 +9,13 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const answerQuestion = `-- name: AnswerQuestion :one
 UPDATE question SET state = 'ANSWERED', answer = $2, answered_by = $3, answered_at = now()
-WHERE id = $1
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at
+WHERE id = $1 AND state = 'OPEN'
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
 `
 
 type AnswerQuestionParams struct {
@@ -39,30 +40,84 @@ func (q *Queries) AnswerQuestion(ctx context.Context, arg AnswerQuestionParams) 
 		&i.AnsweredBy,
 		&i.AskedAt,
 		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
 
+const cancelQuestionsForRun = `-- name: CancelQuestionsForRun :many
+UPDATE question SET state = 'CANCELLED' WHERE run_id = $1 AND state = 'OPEN'
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+`
+
+// A run that's cancelled or killed shouldn't leave a dangling OPEN question
+// blocking its feature's one-open-per-topic slot forever.
+func (q *Queries) CancelQuestionsForRun(ctx context.Context, runID uuid.UUID) ([]Question, error) {
+	rows, err := q.db.Query(ctx, cancelQuestionsForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Question
+	for rows.Next() {
+		var i Question
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.TaskID,
+			&i.Kind,
+			&i.Body,
+			&i.Options,
+			&i.Addressee,
+			&i.State,
+			&i.Answer,
+			&i.AnsweredBy,
+			&i.AskedAt,
+			&i.AnsweredAt,
+			&i.FeatureID,
+			&i.ZulipMessageID,
+			&i.NudgedAt,
+			&i.EscalatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createQuestion = `-- name: CreateQuestion :one
-INSERT INTO question (run_id, task_id, kind, body, options, addressee, state)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at
+INSERT INTO question (run_id, task_id, feature_id, kind, body, options, addressee, state)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
 `
 
 type CreateQuestionParams struct {
-	RunID     uuid.UUID `json:"run_id"`
-	TaskID    uuid.UUID `json:"task_id"`
-	Kind      string    `json:"kind"`
-	Body      string    `json:"body"`
-	Options   []byte    `json:"options"`
-	Addressee *string   `json:"addressee"`
-	State     string    `json:"state"`
+	RunID     uuid.UUID   `json:"run_id"`
+	TaskID    uuid.UUID   `json:"task_id"`
+	FeatureID pgtype.UUID `json:"feature_id"`
+	Kind      string      `json:"kind"`
+	Body      string      `json:"body"`
+	Options   []byte      `json:"options"`
+	Addressee *string     `json:"addressee"`
+	State     string      `json:"state"`
 }
 
+// feature_id (0003_questions.up.sql) is what question_one_open_per_feature_uk
+// enforces against — a second ask_human call for a feature with an already-
+// OPEN question fails this INSERT with a unique_violation, which
+// internal/store.ApplyAsk turns into ErrQuestionAlreadyOpen.
 func (q *Queries) CreateQuestion(ctx context.Context, arg CreateQuestionParams) (Question, error) {
 	row := q.db.QueryRow(ctx, createQuestion,
 		arg.RunID,
 		arg.TaskID,
+		arg.FeatureID,
 		arg.Kind,
 		arg.Body,
 		arg.Options,
@@ -83,12 +138,16 @@ func (q *Queries) CreateQuestion(ctx context.Context, arg CreateQuestionParams) 
 		&i.AnsweredBy,
 		&i.AskedAt,
 		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
 
 const getQuestionByID = `-- name: GetQuestionByID :one
-SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at FROM question WHERE id = $1
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE id = $1
 `
 
 func (q *Queries) GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error) {
@@ -107,17 +166,93 @@ func (q *Queries) GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, 
 		&i.AnsweredBy,
 		&i.AskedAt,
 		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
 	)
 	return i, err
 }
 
-const listOpenQuestionsByRun = `-- name: ListOpenQuestionsByRun :many
-SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at FROM question WHERE run_id = $1 AND state = 'OPEN' ORDER BY asked_at
+const getQuestionForUpdate = `-- name: GetQuestionForUpdate :one
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE id = $1 FOR UPDATE
 `
 
-// The inbox long-poll (GET /v1/runs/{id}/inbox, P4) reads this to build the
-// answer envelope once M3's af-ask-human lands; the envelope shape exists
-// now, only the producer side (M3) is deferred.
+// Locks the row for internal/api.answerQuestion's read-check-write (must
+// still be OPEN) the same way GetTaskForUpdate/GetRunForUpdate lock theirs.
+func (q *Queries) GetQuestionForUpdate(ctx context.Context, id uuid.UUID) (Question, error) {
+	row := q.db.QueryRow(ctx, getQuestionForUpdate, id)
+	var i Question
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TaskID,
+		&i.Kind,
+		&i.Body,
+		&i.Options,
+		&i.Addressee,
+		&i.State,
+		&i.Answer,
+		&i.AnsweredBy,
+		&i.AskedAt,
+		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
+	)
+	return i, err
+}
+
+const listOpenQuestionsByFeature = `-- name: ListOpenQuestionsByFeature :many
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE feature_id = $1 AND state = 'OPEN' ORDER BY asked_at
+`
+
+// The Zulip bridge's inbound path resolves a topic reply to the one open
+// question a feature can have (question_one_open_per_feature_uk).
+func (q *Queries) ListOpenQuestionsByFeature(ctx context.Context, featureID pgtype.UUID) ([]Question, error) {
+	rows, err := q.db.Query(ctx, listOpenQuestionsByFeature, featureID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Question
+	for rows.Next() {
+		var i Question
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.TaskID,
+			&i.Kind,
+			&i.Body,
+			&i.Options,
+			&i.Addressee,
+			&i.State,
+			&i.Answer,
+			&i.AnsweredBy,
+			&i.AskedAt,
+			&i.AnsweredAt,
+			&i.FeatureID,
+			&i.ZulipMessageID,
+			&i.NudgedAt,
+			&i.EscalatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenQuestionsByRun = `-- name: ListOpenQuestionsByRun :many
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE run_id = $1 AND state = 'OPEN' ORDER BY asked_at
+`
+
+// The inbox long-poll (GET /v1/runs/{id}/inbox) reads this to build the
+// answer envelope.
 func (q *Queries) ListOpenQuestionsByRun(ctx context.Context, runID uuid.UUID) ([]Question, error) {
 	rows, err := q.db.Query(ctx, listOpenQuestionsByRun, runID)
 	if err != nil {
@@ -140,6 +275,10 @@ func (q *Queries) ListOpenQuestionsByRun(ctx context.Context, runID uuid.UUID) (
 			&i.AnsweredBy,
 			&i.AskedAt,
 			&i.AnsweredAt,
+			&i.FeatureID,
+			&i.ZulipMessageID,
+			&i.NudgedAt,
+			&i.EscalatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -149,4 +288,177 @@ func (q *Queries) ListOpenQuestionsByRun(ctx context.Context, runID uuid.UUID) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const listOverdueQuestions = `-- name: ListOverdueQuestions :many
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE state = 'OPEN' AND asked_at < $1 ORDER BY asked_at
+`
+
+// internal/questions' timeout-ladder sweeper: every still-OPEN question
+// past its next unfired rung. The sweeper itself decides nudge/escalate/park
+// from asked_at/nudged_at/escalated_at; this just narrows the scan to rows
+// that could possibly be due, using the earliest rung (4h) as the floor.
+func (q *Queries) ListOverdueQuestions(ctx context.Context, askedAt pgtype.Timestamptz) ([]Question, error) {
+	rows, err := q.db.Query(ctx, listOverdueQuestions, askedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Question
+	for rows.Next() {
+		var i Question
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.TaskID,
+			&i.Kind,
+			&i.Body,
+			&i.Options,
+			&i.Addressee,
+			&i.State,
+			&i.Answer,
+			&i.AnsweredBy,
+			&i.AskedAt,
+			&i.AnsweredAt,
+			&i.FeatureID,
+			&i.ZulipMessageID,
+			&i.NudgedAt,
+			&i.EscalatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markQuestionEscalated = `-- name: MarkQuestionEscalated :one
+UPDATE question SET escalated_at = now() WHERE id = $1
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+`
+
+func (q *Queries) MarkQuestionEscalated(ctx context.Context, id uuid.UUID) (Question, error) {
+	row := q.db.QueryRow(ctx, markQuestionEscalated, id)
+	var i Question
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TaskID,
+		&i.Kind,
+		&i.Body,
+		&i.Options,
+		&i.Addressee,
+		&i.State,
+		&i.Answer,
+		&i.AnsweredBy,
+		&i.AskedAt,
+		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
+	)
+	return i, err
+}
+
+const markQuestionNudged = `-- name: MarkQuestionNudged :one
+UPDATE question SET nudged_at = now() WHERE id = $1
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+`
+
+func (q *Queries) MarkQuestionNudged(ctx context.Context, id uuid.UUID) (Question, error) {
+	row := q.db.QueryRow(ctx, markQuestionNudged, id)
+	var i Question
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TaskID,
+		&i.Kind,
+		&i.Body,
+		&i.Options,
+		&i.Addressee,
+		&i.State,
+		&i.Answer,
+		&i.AnsweredBy,
+		&i.AskedAt,
+		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
+	)
+	return i, err
+}
+
+const setQuestionZulipMessageID = `-- name: SetQuestionZulipMessageID :one
+UPDATE question SET zulip_message_id = $2 WHERE id = $1
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+`
+
+type SetQuestionZulipMessageIDParams struct {
+	ID             uuid.UUID `json:"id"`
+	ZulipMessageID *string   `json:"zulip_message_id"`
+}
+
+// internal/zulip.Handlers.Notify calls this after a successful post, making
+// a redelivered outbox row's re-post a no-op (outbox.Handler's idempotency
+// contract) rather than a duplicate Zulip message.
+func (q *Queries) SetQuestionZulipMessageID(ctx context.Context, arg SetQuestionZulipMessageIDParams) (Question, error) {
+	row := q.db.QueryRow(ctx, setQuestionZulipMessageID, arg.ID, arg.ZulipMessageID)
+	var i Question
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TaskID,
+		&i.Kind,
+		&i.Body,
+		&i.Options,
+		&i.Addressee,
+		&i.State,
+		&i.Answer,
+		&i.AnsweredBy,
+		&i.AskedAt,
+		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
+	)
+	return i, err
+}
+
+const timeoutQuestion = `-- name: TimeoutQuestion :one
+UPDATE question SET state = 'TIMED_OUT' WHERE id = $1 AND state = 'OPEN'
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+`
+
+// Timeouts never auto-answer (development-plan.md §6) — this only marks the
+// question TIMED_OUT; the accompanying task transition (TrPark) is a
+// separate call in the same transaction, mirroring AnswerQuestion/
+// TrAnswered's split.
+func (q *Queries) TimeoutQuestion(ctx context.Context, id uuid.UUID) (Question, error) {
+	row := q.db.QueryRow(ctx, timeoutQuestion, id)
+	var i Question
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.TaskID,
+		&i.Kind,
+		&i.Body,
+		&i.Options,
+		&i.Addressee,
+		&i.State,
+		&i.Answer,
+		&i.AnsweredBy,
+		&i.AskedAt,
+		&i.AnsweredAt,
+		&i.FeatureID,
+		&i.ZulipMessageID,
+		&i.NudgedAt,
+		&i.EscalatedAt,
+	)
+	return i, err
 }

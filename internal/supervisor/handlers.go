@@ -18,12 +18,15 @@ import (
 )
 
 // effectPayload mirrors internal/store/transition.go's unexported
-// effectPayload{TaskID, RunID} — the JSON body every run.launch/run.kill
-// outbox row carries. RunID is empty on a first launch (no run row exists
-// yet); a resurrect-and-resume launch (M3) carries an existing run's id.
+// effectPayload{TaskID, RunID, QuestionID} — the JSON body every
+// run.launch/run.kill outbox row carries. RunID is empty on a first launch
+// (no run row exists yet); a resurrect-and-resume launch (M3) carries the
+// JUST-EXITED run's id (Store.ApplyAnswer's own doc comment), and
+// QuestionID names the question that was answered.
 type effectPayload struct {
-	TaskID string `json:"task_id"`
-	RunID  string `json:"run_id,omitempty"`
+	TaskID     string `json:"task_id"`
+	RunID      string `json:"run_id,omitempty"`
+	QuestionID string `json:"question_id,omitempty"`
 }
 
 // Store is the subset of *internal/store.Store these handlers need — kept
@@ -86,12 +89,57 @@ func tokenHash(token string) []byte {
 // Create is itself idempotent by container name, so a daemon call that
 // already succeeded once is a cheap no-op on retry.
 func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
-	taskID, err := parseTaskID(m.Payload, "run.launch")
+	var p effectPayload
+	if err := json.Unmarshal(m.Payload, &p); err != nil {
+		return fmt.Errorf("%w: run.launch: invalid payload: %v", outbox.ErrPoison, err)
+	}
+
+	taskID, err := uuid.Parse(p.TaskID)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: run.launch: invalid task_id %q: %v", outbox.ErrPoison, p.TaskID, err)
 	}
 
 	q := h.Store.Q()
+
+	// Resume detection (M3): TrAnswered's own run.launch effect carries the
+	// JUST-EXITED run's id in RunID — see Store.ApplyAnswer's doc comment.
+	// That run already left PENDING/STARTING/RUNNING (either the M3 exit
+	// path's ApplyRunTransition, or a crash), so GetActiveRunForTask below
+	// finds nothing for it; resolving it here is how this handler tells
+	// "resume" from "first launch" without a payload flag of its own.
+	var resumeSessionID, answer string
+
+	if p.RunID != "" {
+		priorRunID, err := uuid.Parse(p.RunID)
+		if err != nil {
+			return fmt.Errorf("%w: run.launch: invalid run_id %q: %v", outbox.ErrPoison, p.RunID, err)
+		}
+
+		priorRun, err := q.GetRunByID(ctx, priorRunID)
+		if err != nil {
+			return fmt.Errorf("run.launch: loading prior run %s: %w", priorRunID, err)
+		}
+
+		if priorRun.DshSessionID != nil {
+			resumeSessionID = *priorRun.DshSessionID
+		}
+
+		if p.QuestionID != "" {
+			questionID, err := uuid.Parse(p.QuestionID)
+			if err != nil {
+				return fmt.Errorf("%w: run.launch: invalid question_id %q: %v", outbox.ErrPoison, p.QuestionID, err)
+			}
+
+			question, err := q.GetQuestionByID(ctx, questionID)
+			if err != nil {
+				return fmt.Errorf("run.launch: loading question %s: %w", questionID, err)
+			}
+
+			if question.Answer != nil {
+				answer = *question.Answer
+			}
+		}
+	}
 
 	run, err := q.GetActiveRunForTask(ctx, taskID)
 
@@ -126,11 +174,14 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 	}
 
 	if err := h.Daemon.Launch(ctx, LaunchRequest{
-		RunID:   run.ID.String(),
-		Token:   runToken(h.RunTokenSecret, run.ID),
-		Task:    taskPrompt(launchCtx.Title, launchCtx.Intent, acceptanceCriteria),
-		RepoURL: launchCtx.RepoUrl,
-		Role:    run.Role,
+		RunID:           run.ID.String(),
+		TaskID:          taskID.String(),
+		Token:           runToken(h.RunTokenSecret, run.ID),
+		Task:            taskPrompt(launchCtx.Title, launchCtx.Intent, acceptanceCriteria),
+		RepoURL:         launchCtx.RepoUrl,
+		Role:            run.Role,
+		ResumeSessionID: resumeSessionID,
+		Answer:          answer,
 	}); err != nil {
 		return fmt.Errorf("run.launch: daemon launch for run %s: %w", run.ID, err)
 	}

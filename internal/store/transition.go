@@ -8,12 +8,28 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"agentfleet/internal/domain"
 	"agentfleet/internal/redact"
 	db "agentfleet/internal/store/gen"
 )
+
+// ErrQuestionAlreadyOpen is ApplyAsk's sentinel for a
+// question_one_open_per_feature_uk violation — "one open question per topic
+// at a time" (development-plan.md §6). internal/api's ask_human handler
+// turns this into a 409 telling the caller to wait, not a 500.
+var ErrQuestionAlreadyOpen = errors.New("store: a question is already open for this feature")
+
+// isUniqueViolation reports whether err is a Postgres unique_violation
+// (SQLSTATE 23505) against the named constraint — used to translate a
+// racing INSERT into a documented sentinel rather than a bare 500.
+func isUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
+}
 
 // TransitionRequest is what a caller (internal/api's transition handlers,
 // P4) hands to ApplyTaskTransition. It carries no storage-layer details
@@ -53,10 +69,14 @@ func nullableUUIDParam(id *uuid.UUID) pgtype.UUID {
 
 // effectPayload is the JSON body every scheduled outbox row carries — enough
 // context for internal/outbox's registered handlers (run.launch, run.kill,
-// zulip.notify) to act without a second database round trip.
+// zulip.question/zulip.review/zulip.failed) to act without a second database
+// round trip. Duplicated (deliberately, per the original P3 comment) in
+// internal/supervisor/handlers.go — that copy only reads TaskID, so adding
+// QuestionID here does not require touching it.
 type effectPayload struct {
-	TaskID string `json:"task_id"`
-	RunID  string `json:"run_id,omitempty"`
+	TaskID     string `json:"task_id"`
+	RunID      string `json:"run_id,omitempty"`
+	QuestionID string `json:"question_id,omitempty"`
 }
 
 // insertTransitionEvent is the marshal -> redact -> insert sequence shared
@@ -211,6 +231,237 @@ func (s *Store) ApplyTaskTransition(ctx context.Context, r *redact.Redactor, req
 	return result, err
 }
 
+// AskRequest is what internal/api's ask_human handler hands to ApplyAsk —
+// enough to insert the question row and fire TrAsked in the same
+// transaction as ApplyTaskTransition's own state-change/event/outbox write.
+type AskRequest struct {
+	RunID     uuid.UUID
+	TaskID    uuid.UUID
+	Kind      string // 'choice' | 'confirm' | 'free_text' (question_kind_ck)
+	Body      string
+	Options   []byte // jsonb; nil defaults to '[]'
+	Addressee *string
+	Actor     string
+	DedupeKey *string
+}
+
+// AskResult reports the created question alongside the task transition it
+// caused.
+type AskResult struct {
+	Question db.Question
+	Task     TransitionResult
+}
+
+// ApplyAsk is ApplyTaskTransition's counterpart for TrAsked: it locks the
+// task, inserts the question row (feature_id copied from the locked task
+// row, so question_one_open_per_feature_uk enforces "one open question per
+// topic at a time" without a second query), applies TrAsked, and enqueues
+// the zulip.question effect — all in one WithTx, the same atomicity
+// ApplyTaskTransition's own doc comment describes.
+//
+// A concurrent ask against the same feature loses the race at the INSERT's
+// unique_violation and this returns ErrQuestionAlreadyOpen, unwrapped, so
+// callers can errors.Is against it (same convention as
+// domain.ErrIllegalTransition).
+func (s *Store) ApplyAsk(ctx context.Context, r *redact.Redactor, req AskRequest) (AskResult, error) {
+	var result AskResult
+
+	err := s.WithTx(ctx, func(q *db.Queries) error {
+		task, err := q.GetTaskForUpdate(ctx, req.TaskID)
+		if err != nil {
+			return fmt.Errorf("store: loading task %s for update: %w", req.TaskID, err)
+		}
+
+		options := req.Options
+		if options == nil {
+			options = []byte(`[]`)
+		}
+
+		question, err := q.CreateQuestion(ctx, db.CreateQuestionParams{
+			RunID:     req.RunID,
+			TaskID:    req.TaskID,
+			FeatureID: uuidParam(task.FeatureID),
+			Kind:      req.Kind,
+			Body:      req.Body,
+			Options:   options,
+			Addressee: req.Addressee,
+			State:     "OPEN",
+		})
+		if err != nil {
+			if isUniqueViolation(err, "question_one_open_per_feature_uk") {
+				return ErrQuestionAlreadyOpen
+			}
+
+			return fmt.Errorf("store: creating question: %w", err)
+		}
+
+		tc := domain.TransitionContext{
+			TaskID:      req.TaskID.String(),
+			RunID:       req.RunID.String(),
+			QuestionID:  question.ID.String(),
+			RequestedBy: req.Actor,
+		}
+
+		from := domain.TaskState(task.State)
+
+		outcome, err := domain.NextTask(from, domain.TrAsked, tc)
+		if err != nil {
+			return err
+		}
+
+		if _, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
+			ID:    req.TaskID,
+			State: string(outcome.To),
+		}); err != nil {
+			return fmt.Errorf("store: updating task state: %w", err)
+		}
+
+		ev, err := insertTransitionEvent(ctx, q, r, uuidParam(req.RunID), uuidParam(req.TaskID), task.NextEventSeq, outcome.Event, req.DedupeKey)
+		if err != nil {
+			return err
+		}
+
+		effPayloadJSON, err := json.Marshal(effectPayload{
+			TaskID:     req.TaskID.String(),
+			RunID:      req.RunID.String(),
+			QuestionID: question.ID.String(),
+		})
+		if err != nil {
+			return fmt.Errorf("store: marshaling effect payload: %w", err)
+		}
+
+		outboxIDs, err := enqueueEffects(ctx, q, outcome.Effects, ev.ID, effPayloadJSON)
+		if err != nil {
+			return err
+		}
+
+		result = AskResult{
+			Question: question,
+			Task:     TransitionResult{From: from, To: outcome.To, EventID: ev.ID, OutboxIDs: outboxIDs},
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
+// AnswerRequest is what internal/api's answerQuestion handler hands to
+// ApplyAnswer — the counterpart write for TrAnswered.
+type AnswerRequest struct {
+	QuestionID uuid.UUID
+	Answer     string
+	AnsweredBy string
+	Actor      string
+	DedupeKey  *string
+}
+
+// AnswerResult reports the answered question alongside the task transition
+// it caused. Task.OutboxIDs carries the run.launch/resume effect's outbox
+// row id — internal/supervisor.RunLaunch is what actually resurrects the
+// container.
+type AnswerResult struct {
+	Question db.Question
+	Task     TransitionResult
+}
+
+// ErrQuestionNotOpen is ApplyAnswer's sentinel for answering a question
+// that isn't OPEN (already answered, timed out, or cancelled) — a 409, not
+// a 500: two humans racing to answer the same question, or a stale Zulip
+// reply arriving after a timeout parked the task.
+var ErrQuestionNotOpen = errors.New("store: question is not open")
+
+// ApplyAnswer is ApplyAsk's counterpart for TrAnswered: locks the question's
+// task, flips the question to ANSWERED (AnswerQuestion's own WHERE
+// state='OPEN' guard is what ErrQuestionNotOpen surfaces), applies
+// TrAnswered, and enqueues the run.launch/resume effect — one WithTx.
+func (s *Store) ApplyAnswer(ctx context.Context, r *redact.Redactor, req AnswerRequest) (AnswerResult, error) {
+	var result AnswerResult
+
+	err := s.WithTx(ctx, func(q *db.Queries) error {
+		question, err := q.GetQuestionForUpdate(ctx, req.QuestionID)
+		if err != nil {
+			return fmt.Errorf("store: loading question %s for update: %w", req.QuestionID, err)
+		}
+
+		if question.State != "OPEN" {
+			return ErrQuestionNotOpen
+		}
+
+		question, err = q.AnswerQuestion(ctx, db.AnswerQuestionParams{
+			ID:         req.QuestionID,
+			Answer:     &req.Answer,
+			AnsweredBy: &req.AnsweredBy,
+		})
+		if err != nil {
+			// A concurrent answer between the FOR-UPDATE read above and this
+			// UPDATE is impossible (the lock is held for the transaction's
+			// duration), so a no-rows result here would indicate a real bug,
+			// not a race — surfaced as a plain error, not ErrQuestionNotOpen.
+			return fmt.Errorf("store: answering question %s: %w", req.QuestionID, err)
+		}
+
+		task, err := q.GetTaskForUpdate(ctx, question.TaskID)
+		if err != nil {
+			return fmt.Errorf("store: loading task %s for update: %w", question.TaskID, err)
+		}
+
+		tc := domain.TransitionContext{
+			TaskID:      question.TaskID.String(),
+			RunID:       question.RunID.String(),
+			QuestionID:  question.ID.String(),
+			RequestedBy: req.Actor,
+		}
+
+		from := domain.TaskState(task.State)
+
+		outcome, err := domain.NextTask(from, domain.TrAnswered, tc)
+		if err != nil {
+			return err
+		}
+
+		if _, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
+			ID:    question.TaskID,
+			State: string(outcome.To),
+		}); err != nil {
+			return fmt.Errorf("store: updating task state: %w", err)
+		}
+
+		ev, err := insertTransitionEvent(ctx, q, r, uuidParam(question.RunID), uuidParam(question.TaskID), task.NextEventSeq, outcome.Event, req.DedupeKey)
+		if err != nil {
+			return err
+		}
+
+		// RunID carries the JUST-EXITED run's id (per
+		// internal/supervisor.effectPayload's own doc comment: "a
+		// resurrect-and-resume launch carries an existing run's id") — this
+		// is what lets RunLaunch tell a resume launch from a first launch and
+		// pull that run's dsh_session_id forward (Phase 4).
+		effPayloadJSON, err := json.Marshal(effectPayload{
+			TaskID:     question.TaskID.String(),
+			RunID:      question.RunID.String(),
+			QuestionID: question.ID.String(),
+		})
+		if err != nil {
+			return fmt.Errorf("store: marshaling effect payload: %w", err)
+		}
+
+		outboxIDs, err := enqueueEffects(ctx, q, outcome.Effects, ev.ID, effPayloadJSON)
+		if err != nil {
+			return err
+		}
+
+		result = AnswerResult{
+			Question: question,
+			Task:     TransitionResult{From: from, To: outcome.To, EventID: ev.ID, OutboxIDs: outboxIDs},
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
 // RunTransitionRequest mirrors TransitionRequest for run.state.
 type RunTransitionRequest struct {
 	RunID     uuid.UUID
@@ -229,6 +480,17 @@ type RunTransitionRequest struct {
 	// race, not just a missing-bookkeeping gap. Folding it into this one
 	// transaction closes that.
 	ContainerID *string
+	// ExitCode, when set, persists the container's exit code in the SAME
+	// UPDATE as the state change, via SetRunExited instead of plain
+	// UpdateRunState — mutually exclusive with ContainerID (a run reports
+	// either "started" or "exited", never both in one call). M3's
+	// checkpoint-and-exit is this field's own reason to exist: a run whose
+	// TASK already left RUNNING for BLOCKED_ON_HUMAN (Store.ApplyAsk, before
+	// the container ever exits) has no task-level reaction left to make when
+	// its container later exits gracefully — see this method's own doc
+	// comment on why that breaks the "a run exiting always has a task-level
+	// reaction" assumption ApplyRunExit is built on.
+	ExitCode *int32
 }
 
 // RunTransitionResult mirrors TransitionResult for run.state.
@@ -238,12 +500,16 @@ type RunTransitionResult struct {
 }
 
 // ApplyRunTransition is ApplyTaskTransition's counterpart for run.state,
-// for run-only triggers that have no task-level reaction (TrRunStarted:
-// PENDING->STARTING->RUNNING as the supervisor confirms container
-// lifecycle; TrCancel from a not-yet-running run). A run EXITING
-// (TrRunExitedOK/TrRunFailed) always has a task-level reaction too — use
-// ApplyRunExit for that, never this method followed by a separate
-// ApplyTaskTransition call (see ApplyTaskTransition's doc comment).
+// for run-only triggers that have no task-level reaction: TrRunStarted
+// (PENDING->STARTING->RUNNING as the supervisor confirms container
+// lifecycle), TrCancel from a not-yet-running run, and — as of M3 — a run
+// EXITING whose task is BLOCKED_ON_HUMAN (the task already reacted, via
+// Store.ApplyAsk, before this run's container even stopped; nothing is left
+// for a task-level trigger to do). Every OTHER run exit still has a
+// task-level reaction and must use ApplyRunExit instead of this method
+// followed by a separate ApplyTaskTransition call (see ApplyTaskTransition's
+// doc comment) — internal/api's reportContainerExited is what decides which
+// method applies, by checking the task's current state first.
 func (s *Store) ApplyRunTransition(ctx context.Context, r *redact.Redactor, req RunTransitionRequest) (RunTransitionResult, error) {
 	var result RunTransitionResult
 
@@ -261,14 +527,23 @@ func (s *Store) ApplyRunTransition(ctx context.Context, r *redact.Redactor, req 
 			return err
 		}
 
-		if req.ContainerID != nil {
+		switch {
+		case req.ContainerID != nil:
 			if _, err := q.SetRunContainerStarted(ctx, db.SetRunContainerStartedParams{
 				ID: req.RunID, State: string(outcome.To), ContainerID: req.ContainerID,
 			}); err != nil {
 				return fmt.Errorf("store: setting run container started: %w", err)
 			}
-		} else if _, err := q.UpdateRunState(ctx, db.UpdateRunStateParams{ID: req.RunID, State: string(outcome.To)}); err != nil {
-			return fmt.Errorf("store: updating run state: %w", err)
+		case req.ExitCode != nil:
+			if _, err := q.SetRunExited(ctx, db.SetRunExitedParams{
+				ID: req.RunID, State: string(outcome.To), ExitCode: req.ExitCode,
+			}); err != nil {
+				return fmt.Errorf("store: setting run exited: %w", err)
+			}
+		default:
+			if _, err := q.UpdateRunState(ctx, db.UpdateRunStateParams{ID: req.RunID, State: string(outcome.To)}); err != nil {
+				return fmt.Errorf("store: updating run state: %w", err)
+			}
 		}
 
 		ev, err := insertTransitionEvent(ctx, q, r, uuidParam(req.RunID), uuidParam(run.TaskID), run.NextEventSeq, outcome.Event, req.DedupeKey)

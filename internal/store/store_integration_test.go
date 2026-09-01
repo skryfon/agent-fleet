@@ -97,6 +97,40 @@ func seedTaskAndRun(t *testing.T, s *store.Store) (taskID, runID uuid.UUID) {
 	return task.ID, run.ID
 }
 
+// seedTaskOnFeature creates a second RUNNING task+run pair on an existing
+// feature — for tests that need two tasks sharing one Zulip topic (M3's
+// question_one_open_per_feature_uk), where seedTaskAndRun's own fresh
+// project/feature per call would defeat the point.
+func seedTaskOnFeature(t *testing.T, s *store.Store, featureID uuid.UUID) (taskID, runID uuid.UUID) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	task, err := s.Q().InsertTask(ctx, db.InsertTaskParams{
+		FeatureID:          featureID,
+		Lane:               "direct",
+		Title:              "second integration test task",
+		Intent:             "verify per-feature question uniqueness",
+		AcceptanceCriteria: json.RawMessage(`[]`),
+		Touches:            []string{},
+		DependsOn:          []uuid.UUID{},
+		SpecRefs:           json.RawMessage(`[]`),
+		State:              "RUNNING",
+	})
+	if err != nil {
+		t.Fatalf("InsertTask (second): %v", err)
+	}
+
+	run, err := s.Q().InsertRun(ctx, db.InsertRunParams{
+		TaskID: task.ID, Role: "implementer", Model: "test-model", State: "RUNNING",
+	})
+	if err != nil {
+		t.Fatalf("InsertRun (second): %v", err)
+	}
+
+	return task.ID, run.ID
+}
+
 // TestAppendMirrorEventsIdempotentReplay is docs/adr/0001's named hard
 // invariant, exercised through the real Go store layer (not just raw SQL):
 // posting the identical batch twice — the af-control retry-after-crash

@@ -3,9 +3,9 @@
 // runner-facing + human-facing HTTP API described in development-plan.md §4.
 //
 // This process runs the HTTP server (internal/api), the outbox relay
-// (internal/outbox), and internal/supervisor's run.launch/run.kill
-// handlers together; internal/reconcile's sweep (P8) joins this same
-// errgroup once it exists.
+// (internal/outbox), internal/supervisor's run.launch/run.kill handlers,
+// and internal/questions' timeout-ladder sweeper together;
+// internal/reconcile's sweep (P8) joins this same errgroup once it exists.
 package main
 
 import (
@@ -23,9 +23,11 @@ import (
 	"agentfleet/internal/api"
 	"agentfleet/internal/outbox"
 	"agentfleet/internal/policy"
+	"agentfleet/internal/questions"
 	"agentfleet/internal/redact"
 	"agentfleet/internal/store"
 	"agentfleet/internal/supervisor"
+	"agentfleet/internal/zulip"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -90,7 +92,7 @@ func run(log *slog.Logger) error {
 	defer st.Close()
 
 	redactor := redact.FromEnv(os.LookupEnv,
-		"DATABASE_URL", "GH_TOKEN", "OMNI_ROUTE_API_KEY", "ADMIN_TOKEN", "SUPERVISOR_SECRET",
+		"DATABASE_URL", "GH_TOKEN", "OMNI_ROUTE_API_KEY", "ADMIN_TOKEN", "SUPERVISOR_SECRET", "BRIDGE_SECRET",
 	)
 
 	addr := os.Getenv("CONTROL_PLANE_ADDR")
@@ -106,11 +108,21 @@ func run(log *slog.Logger) error {
 		SupervisorSecret: os.Getenv("SUPERVISOR_SECRET"),
 		// M6's .agentfleet/project.yaml compiler will replace this
 		// process-wide Manifest with one resolved per-project — see
-		// internal/api.Server.Manifest's doc comment. An empty Manifest
-		// denies every mediated tool for every role (internal/policy's
-		// unknown_role/not_allow_listed defaults), which is the correct
-		// fail-closed starting point before that compiler exists.
-		Manifest: policy.Manifest{},
+		// internal/api.Server.Manifest's doc comment. Every role but
+		// orchestrator/implementer still denies every mediated tool
+		// (fail-closed). D7 (docs/adr/0007) says only the orchestrator
+		// should get ask_human — but DefaultRole below is "implementer"
+		// (no orchestrator role exists until M5), so a real launched run
+		// would 403 on ask_human without this grant.
+		// TODO(M5): drop "implementer" once an orchestrator role actually
+		// launches runs; this is a manual-testing accommodation, not D7
+		// policy.
+		Manifest: policy.Manifest{
+			Roles: map[string]policy.Role{
+				"orchestrator": {MediatedTools: []string{"ask_human"}},
+				"implementer":  {MediatedTools: []string{"ask_human"}},
+			},
+		},
 	}
 
 	httpServer := &http.Server{
@@ -140,16 +152,34 @@ func run(log *slog.Logger) error {
 
 	relay.Handle("run.launch", supervisorHandlers.RunLaunch)
 	relay.Handle("run.kill", supervisorHandlers.RunKill)
-	// zulip.notify (M3) has no registered handler yet —
-	// internal/outbox.Relay's own documented behavior for an unregistered
-	// topic is to poison the row immediately (see relay.go's dispatchOne),
-	// which is the correct, visible failure mode until that handler lands,
-	// not a silent drop.
+
+	bridgeURL := os.Getenv("BRIDGE_URL")
+	if bridgeURL == "" {
+		bridgeURL = "http://bridge:8091"
+	}
+
+	zulipHandlers := &zulip.Handlers{
+		Store:         st,
+		Client:        zulip.NewClient(bridgeURL, os.Getenv("BRIDGE_SECRET"), nil),
+		DefaultStream: os.Getenv("ZULIP_STREAM"),
+	}
+
+	relay.Handle("zulip.question", zulipHandlers.Notify)
+	relay.Handle("zulip.review", zulipHandlers.Notify)
+	relay.Handle("zulip.failed", zulipHandlers.Notify)
+
+	sweeper := &questions.Sweeper{
+		Store: st, Redact: redactor, Zulip: zulipHandlers.Client, Log: log, Config: questions.DefaultConfig(),
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
 		return relay.Run(gctx)
+	})
+
+	g.Go(func() error {
+		return sweeper.Run(gctx)
 	})
 
 	g.Go(func() error {
