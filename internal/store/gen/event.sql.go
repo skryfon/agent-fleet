@@ -67,6 +67,33 @@ func (q *Queries) AppendMirrorEvents(ctx context.Context, arg AppendMirrorEvents
 	return result.RowsAffected(), nil
 }
 
+const countAllTasks = `-- name: CountAllTasks :one
+SELECT count(*) FROM task
+`
+
+// §11's drift-rate metric denominator: "deviations reported per task."
+func (q *Queries) CountAllTasks(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countAllTasks)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDeviationEvents = `-- name: CountDeviationEvents :one
+SELECT count(*) FROM event WHERE kind = 'deviation'
+`
+
+// development-plan.md §11's drift-rate metric numerator: how many
+// "report_deviation" tool calls (internal/api's reportDeviation handler,
+// M5) have ever been recorded. The append-only event log is the source —
+// no denormalised counter column, per that handler's own doc comment.
+func (q *Queries) CountDeviationEvents(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countDeviationEvents)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertControlPlaneEvent = `-- name: InsertControlPlaneEvent :one
 INSERT INTO event (run_id, task_id, seq, kind, actor, payload, source, dedupe_key)
 VALUES ($1, $2, $3, $4, $5, $6, 'control_plane', $7)

@@ -187,6 +187,13 @@ var taskTable = []TaskTransition{
 		Effects: []EffectSpec{{Topic: "zulip.question", KeyReason: "question"}},
 	},
 	{
+		// D7/M5's ask_orchestrator: same BLOCKED_ON_HUMAN parking as TrAsked,
+		// but no zulip.question effect — internal/store.ApplyAsk enqueues a
+		// run_inbox row for the orchestrator instead (Phase 4), never Zulip.
+		From: TaskRunning, Trigger: TrAskedOrchestrator, To: TaskBlockedOnHuman,
+		EventKind: "task_blocked_on_orchestrator",
+	},
+	{
 		From: TaskBlockedOnHuman, Trigger: TrAnswered, To: TaskRunning,
 		EventKind: "task_unblocked",
 		Effects:   []EffectSpec{{Topic: "run.launch", KeyReason: "resume"}},

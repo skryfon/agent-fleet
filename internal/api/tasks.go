@@ -318,8 +318,27 @@ func (s *Server) startTask(w http.ResponseWriter, r *http.Request) {
 	s.applyTaskTrigger(w, r, domain.TrStart, "api:start")
 }
 
+// cancelTask cancels the whole subtree rooted at the task, not just the
+// task itself (development-plan.md §7 M5's done-when: "cancelling the
+// parent kills the subtree"). For a task with no spawned children this is
+// exactly the single-task cancel it always was — Store.CancelSubtree's own
+// recursive walk finds nothing else to visit.
 func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request) {
-	s.applyTaskTrigger(w, r, domain.TrCancel, "api:cancel")
+	taskID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid task id")
+
+		return
+	}
+
+	results, err := s.Store.CancelSubtree(r.Context(), s.Redact, taskID, "api:cancel")
+	if err != nil {
+		writeTransitionErr(w, s.Log, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, results)
 }
 
 // applyTaskTrigger is startTask/cancelTask's shared body: parse the path

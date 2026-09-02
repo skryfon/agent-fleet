@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"agentfleet/internal/budget"
 	"agentfleet/internal/domain"
 	"agentfleet/internal/redact"
 	db "agentfleet/internal/store/gen"
@@ -22,6 +23,13 @@ import (
 // at a time" (development-plan.md §6). internal/api's ask_human handler
 // turns this into a 409 telling the caller to wait, not a 500.
 var ErrQuestionAlreadyOpen = errors.New("store: a question is already open for this feature")
+
+// ErrQuestionBudgetBreached is ApplyAsk's sentinel for M5's question-cap
+// enforcement (development-plan.md §6: "Cap questions per run (3) and per
+// feature (10). Breach parks the feature and tells the architect the spec
+// was underspecified."). internal/api turns this into a 429 — the caller
+// asked one question too many, not an illegal state transition.
+var ErrQuestionBudgetBreached = errors.New("store: question budget exceeded")
 
 // isUniqueViolation reports whether err is a Postgres unique_violation
 // (SQLSTATE 23505) against the named constraint — used to translate a
@@ -258,8 +266,9 @@ func (s *Store) ApplyTaskTransition(ctx context.Context, r *redact.Redactor, req
 }
 
 // AskRequest is what internal/api's ask_human handler hands to ApplyAsk —
-// enough to insert the question row and fire TrAsked in the same
-// transaction as ApplyTaskTransition's own state-change/event/outbox write.
+// enough to insert the question row and fire TrAsked (or, for D7's M5
+// ask_orchestrator, TrAskedOrchestrator) in the same transaction as
+// ApplyTaskTransition's own state-change/event/outbox write.
 type AskRequest struct {
 	RunID     uuid.UUID
 	TaskID    uuid.UUID
@@ -269,6 +278,22 @@ type AskRequest struct {
 	Addressee *string
 	Actor     string
 	DedupeKey *string
+	// ToRunID, when set, routes this question to a specific orchestrator run
+	// (M5's ask_orchestrator) instead of a human: ApplyAsk fires
+	// TrAskedOrchestrator instead of TrAsked (no zulip.question effect —
+	// D7's whole point is that a worker never reaches Zulip directly), and
+	// enqueues a run_inbox row of kind worker_question for ToRunID in the
+	// same transaction, so the orchestrator's own inbox poll can see it.
+	ToRunID *uuid.UUID
+	// Caps is s.BudgetCaps' Questions dimension, checked BEFORE the question
+	// is created (M5, development-plan.md §6): a human-facing ask_human
+	// increments and checks BOTH the run and feature question-cap scopes
+	// (a breach on either parks the ask); an ask_orchestrator (ToRunID set)
+	// only increments/checks the RUN scope — a worker's internal questions
+	// to its own orchestrator don't compete for the feature's human-facing
+	// slot. Zero Caps.Questions means uncapped, same convention as
+	// internal/budget.Caps everywhere else.
+	Caps budget.Caps
 }
 
 // AskResult reports the created question alongside the task transition it
@@ -278,24 +303,50 @@ type AskResult struct {
 	Task     TransitionResult
 }
 
-// ApplyAsk is ApplyTaskTransition's counterpart for TrAsked: it locks the
-// task, inserts the question row (feature_id copied from the locked task
-// row, so question_one_open_per_feature_uk enforces "one open question per
-// topic at a time" without a second query), applies TrAsked, and enqueues
-// the zulip.question effect — all in one WithTx, the same atomicity
-// ApplyTaskTransition's own doc comment describes.
+// ApplyAsk is ApplyTaskTransition's counterpart for TrAsked/
+// TrAskedOrchestrator: it locks the task, inserts the question row
+// (feature_id copied from the locked task row, so
+// question_one_open_per_feature_uk enforces "one open question per topic at
+// a time" without a second query), applies the trigger req.ToRunID selects,
+// and enqueues that trigger's effects — all in one WithTx, the same
+// atomicity ApplyTaskTransition's own doc comment describes.
 //
-// A concurrent ask against the same feature loses the race at the INSERT's
-// unique_violation and this returns ErrQuestionAlreadyOpen, unwrapped, so
-// callers can errors.Is against it (same convention as
-// domain.ErrIllegalTransition).
+// A concurrent ask against the same feature (or, for ask_orchestrator, the
+// same asking run) loses the race at the INSERT's unique_violation and this
+// returns ErrQuestionAlreadyOpen, unwrapped, so callers can errors.Is
+// against it (same convention as domain.ErrIllegalTransition).
 func (s *Store) ApplyAsk(ctx context.Context, r *redact.Redactor, req AskRequest) (AskResult, error) {
 	var result AskResult
+
+	trigger := domain.TrAsked
+	if req.ToRunID != nil {
+		trigger = domain.TrAskedOrchestrator
+	}
 
 	err := s.WithTx(ctx, func(q *db.Queries) error {
 		task, err := q.GetTaskForUpdate(ctx, req.TaskID)
 		if err != nil {
 			return fmt.Errorf("store: loading task %s for update: %w", req.TaskID, err)
+		}
+
+		runSpent, err := incrementBudgetScope(ctx, q, "run", req.RunID, UsageDelta{Questions: 1}, req.Caps)
+		if err != nil {
+			return err
+		}
+
+		if b := budget.Check(req.Caps, runSpent); b != nil {
+			return ErrQuestionBudgetBreached
+		}
+
+		if req.ToRunID == nil {
+			featureSpent, err := incrementBudgetScope(ctx, q, "feature", task.FeatureID, UsageDelta{Questions: 1}, req.Caps)
+			if err != nil {
+				return err
+			}
+
+			if b := budget.Check(req.Caps, featureSpent); b != nil {
+				return ErrQuestionBudgetBreached
+			}
 		}
 
 		options := req.Options
@@ -312,9 +363,10 @@ func (s *Store) ApplyAsk(ctx context.Context, r *redact.Redactor, req AskRequest
 			Options:   options,
 			Addressee: req.Addressee,
 			State:     "OPEN",
+			ToRunID:   nullableUUIDParam(req.ToRunID),
 		})
 		if err != nil {
-			if isUniqueViolation(err, "question_one_open_per_feature_uk") {
+			if isUniqueViolation(err, "question_one_open_per_feature_uk") || isUniqueViolation(err, "question_one_open_per_run_uk") {
 				return ErrQuestionAlreadyOpen
 			}
 
@@ -330,7 +382,7 @@ func (s *Store) ApplyAsk(ctx context.Context, r *redact.Redactor, req AskRequest
 
 		from := domain.TaskState(task.State)
 
-		outcome, err := domain.NextTask(from, domain.TrAsked, tc)
+		outcome, err := domain.NextTask(from, trigger, tc)
 		if err != nil {
 			return err
 		}
@@ -359,6 +411,24 @@ func (s *Store) ApplyAsk(ctx context.Context, r *redact.Redactor, req AskRequest
 		outboxIDs, err := enqueueEffects(ctx, q, outcome.Effects, ev.ID, effPayloadJSON)
 		if err != nil {
 			return err
+		}
+
+		if req.ToRunID != nil {
+			inboxPayload, err := json.Marshal(map[string]any{
+				"question_id": question.ID.String(),
+				"from_run_id": req.RunID.String(),
+				"kind":        req.Kind,
+				"body":        req.Body,
+			})
+			if err != nil {
+				return fmt.Errorf("store: marshaling worker_question payload: %w", err)
+			}
+
+			if _, err := q.EnqueueRunInbox(ctx, db.EnqueueRunInboxParams{
+				RunID: *req.ToRunID, Kind: "worker_question", Payload: inboxPayload,
+			}); err != nil {
+				return fmt.Errorf("store: enqueueing worker_question for run %s: %w", *req.ToRunID, err)
+			}
 		}
 
 		result = AskResult{

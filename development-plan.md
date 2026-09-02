@@ -536,6 +536,12 @@ Instrument from M2, review weekly.
 
 - **Time-to-review** per PR — if it rises, reduce concurrency.
 - **Drift rate** — deviations reported per task. Rising means specs are too thin.
+  Instrumented in M5: `report_deviation` (all roles, `runner/packages/af-subagent`)
+  writes a `deviation` event; `GET /v1/metrics/drift` reports
+  `deviations / count(task)` straight off the append-only event log — no
+  denormalised counter column, per that endpoint's own doc comment
+  (`internal/api/metrics.go`). No production data point yet — the metric exists,
+  nobody has run a fanned-out feature against it.
 - **Question rate** per run and feature — rising during implementation means planning
   underperformed.
 - **Cost per merged PR** — the only cost number that means anything.

@@ -9,10 +9,52 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActiveChildTasksForRun = `-- name: CountActiveChildTasksForRun :one
+SELECT count(*) FROM task
+WHERE parent_run_id = $1
+  AND state NOT IN ('DONE', 'FAILED', 'CANCELLED', 'PARKED')
+`
+
+// The direct fan-out width internal/fanout.Check's MaxChildrenPerRun caps —
+// how many still-active tasks the given run has already spawned.
+func (q *Queries) CountActiveChildTasksForRun(ctx context.Context, parentRunID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveChildTasksForRun, parentRunID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countActiveSubtreeTasks = `-- name: CountActiveSubtreeTasks :one
+WITH RECURSIVE sub AS (
+    SELECT id FROM task WHERE id = $1::uuid
+    UNION
+    SELECT t.id FROM task t
+      JOIN run r ON t.parent_run_id = r.id
+      JOIN sub s ON r.task_id = s.id
+)
+SELECT count(*) FROM task
+WHERE id IN (SELECT id FROM sub)
+  AND state NOT IN ('DONE', 'FAILED', 'CANCELLED', 'PARKED')
+`
+
+// The aggregate width internal/fanout.Check's MaxActiveSubtree caps: every
+// still-active task anywhere under rootTaskID's own lineage (itself
+// included), walked transitively through parent_run_id -> run.task_id.
+// Mirrors ListActiveSubtreeTaskIDs below; kept as a separate :one query
+// (COUNT, not the row set) since spawn_worker's hot path only needs the
+// number, not the ids.
+func (q *Queries) CountActiveSubtreeTasks(ctx context.Context, rootTaskID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveSubtreeTasks, rootTaskID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getTaskByFeatureExternalRef = `-- name: GetTaskByFeatureExternalRef :one
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE feature_id = $1 AND external_ref = $2
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role FROM task WHERE feature_id = $1 AND external_ref = $2
 `
 
 type GetTaskByFeatureExternalRefParams struct {
@@ -41,12 +83,15 @@ func (q *Queries) GetTaskByFeatureExternalRef(ctx context.Context, arg GetTaskBy
 		&i.UpdatedAt,
 		&i.NextEventSeq,
 		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
 	)
 	return i, err
 }
 
 const getTaskByID = `-- name: GetTaskByID :one
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE id = $1
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role FROM task WHERE id = $1
 `
 
 func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
@@ -70,12 +115,15 @@ func (q *Queries) GetTaskByID(ctx context.Context, id uuid.UUID) (Task, error) {
 		&i.UpdatedAt,
 		&i.NextEventSeq,
 		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
 	)
 	return i, err
 }
 
 const getTaskForUpdate = `-- name: GetTaskForUpdate :one
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE id = $1 FOR UPDATE
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role FROM task WHERE id = $1 FOR UPDATE
 `
 
 // Locks the row for the duration of the caller's transaction — the first
@@ -102,13 +150,16 @@ func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, err
 		&i.UpdatedAt,
 		&i.NextEventSeq,
 		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
 	)
 	return i, err
 }
 
 const incrementTaskAttempt = `-- name: IncrementTaskAttempt :one
 UPDATE task SET attempt = attempt + 1, updated_at = now() WHERE id = $1
-RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role
 `
 
 // Caught in code review: a task's retry cap must survive across the
@@ -138,6 +189,68 @@ func (q *Queries) IncrementTaskAttempt(ctx context.Context, id uuid.UUID) (Task,
 		&i.UpdatedAt,
 		&i.NextEventSeq,
 		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
+	)
+	return i, err
+}
+
+const insertChildTask = `-- name: InsertChildTask :one
+INSERT INTO task (feature_id, lane, title, intent, acceptance_criteria,
+                   state, parent_run_id, depth, role)
+VALUES ($1, 'direct', $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role
+`
+
+type InsertChildTaskParams struct {
+	FeatureID          uuid.UUID   `json:"feature_id"`
+	Title              string      `json:"title"`
+	Intent             string      `json:"intent"`
+	AcceptanceCriteria []byte      `json:"acceptance_criteria"`
+	State              string      `json:"state"`
+	ParentRunID        pgtype.UUID `json:"parent_run_id"`
+	Depth              int32       `json:"depth"`
+	Role               *string     `json:"role"`
+}
+
+// M5's spawn_worker (internal/store.ApplySpawn): a child task in the SAME
+// feature as its spawning run's own task, one hop deeper. lane is always
+// 'direct' — a spawned worker never goes through the Spec Kit ingestion
+// lane (D5/D6 govern planning, not fan-out).
+func (q *Queries) InsertChildTask(ctx context.Context, arg InsertChildTaskParams) (Task, error) {
+	row := q.db.QueryRow(ctx, insertChildTask,
+		arg.FeatureID,
+		arg.Title,
+		arg.Intent,
+		arg.AcceptanceCriteria,
+		arg.State,
+		arg.ParentRunID,
+		arg.Depth,
+		arg.Role,
+	)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.FeatureID,
+		&i.ExternalRef,
+		&i.Lane,
+		&i.Title,
+		&i.Intent,
+		&i.AcceptanceCriteria,
+		&i.Touches,
+		&i.DependsOn,
+		&i.SpecRefs,
+		&i.State,
+		&i.Assignee,
+		&i.CreatedAt,
+		&i.Version,
+		&i.UpdatedAt,
+		&i.NextEventSeq,
+		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
 	)
 	return i, err
 }
@@ -146,7 +259,7 @@ const insertTask = `-- name: InsertTask :one
 INSERT INTO task (feature_id, external_ref, lane, title, intent,
                    acceptance_criteria, touches, depends_on, spec_refs, state)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role
 `
 
 type InsertTaskParams struct {
@@ -196,12 +309,104 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.UpdatedAt,
 		&i.NextEventSeq,
 		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
 	)
 	return i, err
 }
 
+const listActiveSubtreeTaskIDs = `-- name: ListActiveSubtreeTaskIDs :many
+WITH RECURSIVE sub AS (
+    SELECT id FROM task WHERE id = $1::uuid
+    UNION
+    SELECT t.id FROM task t
+      JOIN run r ON t.parent_run_id = r.id
+      JOIN sub s ON r.task_id = s.id
+)
+SELECT id FROM task
+WHERE id IN (SELECT id FROM sub)
+  AND state NOT IN ('DONE', 'FAILED', 'CANCELLED', 'PARKED')
+`
+
+// internal/store.CancelSubtree's own view of "everything under this task":
+// the task itself, plus every task spawned (transitively, via
+// parent_run_id -> run.task_id) by any run of it — excluding tasks already
+// in a terminal state, so cancelling a subtree never attempts an illegal
+// transition out of DONE/FAILED/CANCELLED/PARKED.
+func (q *Queries) ListActiveSubtreeTaskIDs(ctx context.Context, rootTaskID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listActiveSubtreeTaskIDs, rootTaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveTasksByFeature = `-- name: ListActiveTasksByFeature :many
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role FROM task
+WHERE feature_id = $1
+  AND state NOT IN ('DONE', 'FAILED', 'CANCELLED', 'PARKED')
+ORDER BY created_at
+`
+
+// The M5 feature-scope budget breach reaction (internal/api/usage.go): every
+// active task in the feature, each cancelled as its own subtree root so a
+// runaway worker's siblings stop burning the feature's remaining budget too.
+func (q *Queries) ListActiveTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error) {
+	rows, err := q.db.Query(ctx, listActiveTasksByFeature, featureID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Task
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.FeatureID,
+			&i.ExternalRef,
+			&i.Lane,
+			&i.Title,
+			&i.Intent,
+			&i.AcceptanceCriteria,
+			&i.Touches,
+			&i.DependsOn,
+			&i.SpecRefs,
+			&i.State,
+			&i.Assignee,
+			&i.CreatedAt,
+			&i.Version,
+			&i.UpdatedAt,
+			&i.NextEventSeq,
+			&i.Attempt,
+			&i.ParentRunID,
+			&i.Depth,
+			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTasksByFeature = `-- name: ListTasksByFeature :many
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE feature_id = $1 ORDER BY created_at
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role FROM task WHERE feature_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error) {
@@ -231,6 +436,9 @@ func (q *Queries) ListTasksByFeature(ctx context.Context, featureID uuid.UUID) (
 			&i.UpdatedAt,
 			&i.NextEventSeq,
 			&i.Attempt,
+			&i.ParentRunID,
+			&i.Depth,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
@@ -243,7 +451,7 @@ func (q *Queries) ListTasksByFeature(ctx context.Context, featureID uuid.UUID) (
 }
 
 const listTasksByState = `-- name: ListTasksByState :many
-SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt FROM task WHERE state = $1 ORDER BY created_at
+SELECT id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role FROM task WHERE state = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListTasksByState(ctx context.Context, state string) ([]Task, error) {
@@ -273,6 +481,9 @@ func (q *Queries) ListTasksByState(ctx context.Context, state string) ([]Task, e
 			&i.UpdatedAt,
 			&i.NextEventSeq,
 			&i.Attempt,
+			&i.ParentRunID,
+			&i.Depth,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
@@ -289,7 +500,7 @@ UPDATE task
 SET state = $2, version = version + 1, updated_at = now(),
     next_event_seq = next_event_seq + 1
 WHERE id = $1
-RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role
 `
 
 type UpdateTaskStateParams struct {
@@ -322,6 +533,9 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.UpdatedAt,
 		&i.NextEventSeq,
 		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
 	)
 	return i, err
 }
@@ -340,7 +554,7 @@ DO UPDATE SET
     depends_on = EXCLUDED.depends_on,
     spec_refs = EXCLUDED.spec_refs,
     updated_at = now()
-RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt
+RETURNING id, feature_id, external_ref, lane, title, intent, acceptance_criteria, touches, depends_on, spec_refs, state, assignee, created_at, version, updated_at, next_event_seq, attempt, parent_run_id, depth, role
 `
 
 type UpsertTaskByExternalRefParams struct {
@@ -393,6 +607,9 @@ func (q *Queries) UpsertTaskByExternalRef(ctx context.Context, arg UpsertTaskByE
 		&i.UpdatedAt,
 		&i.NextEventSeq,
 		&i.Attempt,
+		&i.ParentRunID,
+		&i.Depth,
+		&i.Role,
 	)
 	return i, err
 }

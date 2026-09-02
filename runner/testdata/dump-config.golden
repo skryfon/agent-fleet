@@ -390,7 +390,6 @@
       '[object Object]': undefined
 - id: af-subagent
   name: '@agentfleet/af-subagent'
-  disabled: true
 - id: af-webhook
   name: '@agentfleet/af-webhook'
   disabled: true

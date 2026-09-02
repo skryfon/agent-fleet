@@ -72,11 +72,14 @@ RETURNING *;
 
 -- name: GetLaunchContext :one
 -- internal/supervisor's run.launch handler (P5) needs exactly this to build
--- a launch request: the task content for TASK, and the project's repo for
+-- a launch request: the task content for TASK, the project's repo for
 -- REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
--- exactly one repo before M6's multi-repo manifest work.
+-- exactly one repo before M6's multi-repo manifest work — and (M5)
+-- t.parent_run_id/t.role, so a spawned child's run row carries its own
+-- parent_run_id (CancelSubtree's walk key) and role without a second query.
 SELECT
     t.id AS task_id, t.title, t.intent, t.acceptance_criteria,
+    t.parent_run_id, t.role,
     p.repos[1]::text AS repo_url
 FROM task t
 JOIN feature f ON f.id = t.feature_id

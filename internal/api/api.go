@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"agentfleet/internal/budget"
+	"agentfleet/internal/fanout"
 	"agentfleet/internal/policy"
 	"agentfleet/internal/redact"
 	"agentfleet/internal/store"
@@ -50,6 +51,13 @@ type Server struct {
 	// "uncapped," not "always breach").
 	BudgetCaps budget.Caps
 
+	// FanoutCaps bounds spawn_worker (development-plan.md §5/§7 M5):
+	// MaxDepth/MaxChildrenPerRun/MaxActiveSubtree, evaluated by
+	// internal/fanout.Check before internal/store.ApplySpawn ever runs.
+	// Process-wide for M5, same documented M6 stand-in as Manifest and
+	// BudgetCaps above.
+	FanoutCaps fanout.Caps
+
 	// MaxBodyBytes overrides defaultMaxBodyBytes when non-zero — exposed for
 	// tests that want to exercise the 413 path without a huge fixture body.
 	MaxBodyBytes int64
@@ -88,6 +96,8 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /v1/runs", s.authAdmin(s.listActiveRuns))
 	mux.HandleFunc("GET /v1/events", s.authAdmin(s.eventsSSE))
+	// M5, development-plan.md §11: drift rate (deviations per task).
+	mux.HandleFunc("GET /v1/metrics/drift", s.authAdmin(s.drift))
 
 	mux.HandleFunc("POST /v1/runs/{id}/events", s.authRun(s.postRunEvents))
 	mux.HandleFunc("POST /v1/runs/{id}/tools/{name}", s.authRun(s.dispatchTool))

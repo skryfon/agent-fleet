@@ -5,6 +5,7 @@ RUNNING + run_exited_ok -> REVIEW [task_in_review] effect(zulip.review, review)
 RUNNING + run_exited_err_retryable -> QUEUED [task_requeued]
 RUNNING + run_exited_err_final -> FAILED [task_failed] effect(zulip.failed, failed)
 RUNNING + asked -> BLOCKED_ON_HUMAN [task_blocked] effect(zulip.question, question)
+RUNNING + asked_orchestrator -> BLOCKED_ON_HUMAN [task_blocked_on_orchestrator]
 BLOCKED_ON_HUMAN + answered -> RUNNING [task_unblocked] effect(run.launch, resume)
 RUNNING + cancel -> CANCELLED [task_cancelled] effect(run.kill, kill)
 BLOCKED_ON_HUMAN + cancel -> CANCELLED [task_cancelled] effect(run.kill, kill)

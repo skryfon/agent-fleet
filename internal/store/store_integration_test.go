@@ -357,3 +357,182 @@ func TestCanarySecretNeverReachesEvent(t *testing.T) {
 		t.Fatalf("canary secret found in %d event row(s) — redaction did not apply", count)
 	}
 }
+
+// insertRunningRunForTask stands in for what internal/supervisor.RunLaunch
+// would do once the run.launch effect ApplySpawn's TrStart schedules is
+// actually processed by the outbox relay — this package's own tests never
+// run that relay, so a two-level spawn (a grandchild spawned FROM a
+// spawned child) needs the child's run row inserted directly, the same way
+// seedTaskAndRun seeds the root's.
+func insertRunningRunForTask(t *testing.T, s *store.Store, taskID uuid.UUID) uuid.UUID {
+	t.Helper()
+
+	run, err := s.Q().InsertRun(context.Background(), db.InsertRunParams{
+		TaskID: taskID, Role: "implementer", Model: "test-model", State: "RUNNING",
+	})
+	if err != nil {
+		t.Fatalf("InsertRun: %v", err)
+	}
+
+	return run.ID
+}
+
+// TestApplySpawnCreatesChildTaskAtNextDepth is ApplySpawn's own basic
+// contract check: a spawned child lands in the SAME feature, one depth
+// level deeper than its parent, already QUEUED->RUNNING (spawn_worker
+// hands the orchestrator a worker that's already going, not one it must
+// separately POST /start for), and task.parent_run_id is the spawning run
+// — CancelSubtree's walk key. (A concrete run row for the child is
+// internal/supervisor.RunLaunch's job, processing the run.launch effect
+// this spawn schedules — not ApplySpawn's; see
+// internal/supervisor/handlers_integration_test.go for that half.)
+func TestApplySpawnCreatesChildTaskAtNextDepth(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	r := redact.New(nil, nil)
+	parentTaskID, parentRunID := seedTaskAndRun(t, s)
+
+	result, err := s.ApplySpawn(ctx, r, store.SpawnRequest{
+		ParentTaskID: parentTaskID, ParentRunID: parentRunID,
+		Title: "child task", Intent: "do the sub-work",
+		Actor: "test",
+	})
+	if err != nil {
+		t.Fatalf("ApplySpawn: %v", err)
+	}
+
+	if result.Child.Depth != 1 {
+		t.Fatalf("child.Depth = %d, want 1", result.Child.Depth)
+	}
+
+	parentTask, err := s.Q().GetTaskByID(ctx, parentTaskID)
+	if err != nil {
+		t.Fatalf("GetTaskByID(parent): %v", err)
+	}
+
+	if result.Child.FeatureID != parentTask.FeatureID {
+		t.Fatalf("child.FeatureID = %s, want %s (same feature as parent)", result.Child.FeatureID, parentTask.FeatureID)
+	}
+
+	if result.Started.To != "RUNNING" {
+		t.Fatalf("child task ended at %s, want RUNNING", result.Started.To)
+	}
+
+	if !result.Child.ParentRunID.Valid || result.Child.ParentRunID.Bytes != parentRunID {
+		t.Fatalf("child task.parent_run_id = %+v, want %s", result.Child.ParentRunID, parentRunID)
+	}
+
+	if len(result.Started.OutboxIDs) != 1 {
+		t.Fatalf("TrStart enqueued %d outbox rows, want 1 (run.launch)", len(result.Started.OutboxIDs))
+	}
+}
+
+// TestCancelSubtreeCancelsEveryDescendant is half of M5's own done-when
+// (development-plan.md §7: "cancelling the parent kills the subtree"): a
+// grandchild spawned by a spawned child must be cancelled too, and each
+// cancelled task's own run.kill effect must be enqueued — not just the
+// direct child's.
+func TestCancelSubtreeCancelsEveryDescendant(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	r := redact.New(nil, nil)
+	rootTaskID, rootRunID := seedTaskAndRun(t, s)
+
+	childResult, err := s.ApplySpawn(ctx, r, store.SpawnRequest{
+		ParentTaskID: rootTaskID, ParentRunID: rootRunID,
+		Title: "child", Intent: "child work", Actor: "test",
+	})
+	if err != nil {
+		t.Fatalf("ApplySpawn(child): %v", err)
+	}
+
+	childRunID := insertRunningRunForTask(t, s, childResult.Child.ID)
+
+	grandchildResult, err := s.ApplySpawn(ctx, r, store.SpawnRequest{
+		ParentTaskID: childResult.Child.ID, ParentRunID: childRunID,
+		Title: "grandchild", Intent: "grandchild work", Actor: "test",
+	})
+	if err != nil {
+		t.Fatalf("ApplySpawn(grandchild): %v", err)
+	}
+
+	if grandchildResult.Child.Depth != 2 {
+		t.Fatalf("grandchild.Depth = %d, want 2", grandchildResult.Child.Depth)
+	}
+
+	results, err := s.CancelSubtree(ctx, r, rootTaskID, "test:cancel")
+	if err != nil {
+		t.Fatalf("CancelSubtree: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("CancelSubtree returned %d transitions, want 3 (root, child, grandchild)", len(results))
+	}
+
+	for _, id := range []uuid.UUID{rootTaskID, childResult.Child.ID, grandchildResult.Child.ID} {
+		task, err := s.Q().GetTaskByID(ctx, id)
+		if err != nil {
+			t.Fatalf("GetTaskByID(%s): %v", id, err)
+		}
+
+		if task.State != "CANCELLED" {
+			t.Fatalf("task %s state = %s, want CANCELLED", id, task.State)
+		}
+	}
+
+	for _, res := range results {
+		if len(res.OutboxIDs) != 1 {
+			t.Fatalf("transition for a cancelled task enqueued %d outbox rows, want 1 (run.kill)", len(res.OutboxIDs))
+		}
+	}
+}
+
+// TestCancelSubtreeSkipsAlreadyTerminalTasks proves a subtree containing a
+// task that's already terminal (DONE/FAILED/CANCELLED/PARKED) is not itself
+// an error — ListActiveSubtreeTaskIDs excludes terminal tasks, so
+// CancelSubtree simply has fewer tasks to cancel, rather than failing on an
+// illegal transition. REVIEW is deliberately NOT used for "already
+// finished" here: it is not terminal (domain.TaskReview still accepts
+// TrCancel), so a REVIEW child is correctly INCLUDED in a subtree cancel —
+// PARKED is the terminal state this test actually needs.
+func TestCancelSubtreeSkipsAlreadyTerminalTasks(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	r := redact.New(nil, nil)
+	rootTaskID, rootRunID := seedTaskAndRun(t, s)
+
+	childResult, err := s.ApplySpawn(ctx, r, store.SpawnRequest{
+		ParentTaskID: rootTaskID, ParentRunID: rootRunID,
+		Title: "child", Intent: "child work", Actor: "test",
+	})
+	if err != nil {
+		t.Fatalf("ApplySpawn: %v", err)
+	}
+
+	// Park the child on its own, independently of the parent, before the
+	// parent is ever cancelled — PARKED is terminal, so this must be the
+	// task ListActiveSubtreeTaskIDs excludes.
+	if _, err := s.ApplyTaskTransition(ctx, r, store.TransitionRequest{
+		TaskID: childResult.Child.ID, Trigger: "park", Actor: "test",
+	}); err != nil {
+		t.Fatalf("ApplyTaskTransition(child, park): %v", err)
+	}
+
+	results, err := s.CancelSubtree(ctx, r, rootTaskID, "test:cancel")
+	if err != nil {
+		t.Fatalf("CancelSubtree: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("CancelSubtree returned %d transitions, want 1 (root only — child already PARKED)", len(results))
+	}
+
+	child, err := s.Q().GetTaskByID(ctx, childResult.Child.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID(child): %v", err)
+	}
+
+	if child.State != "PARKED" {
+		t.Fatalf("child state = %s, want PARKED (untouched by the parent's cancel)", child.State)
+	}
+}

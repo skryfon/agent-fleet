@@ -39,7 +39,12 @@ export interface RunClient {
   postEvents(events: MirrorEvent[]): Promise<void>
   checkpoint(dshSessionID: string | undefined): Promise<void>
   dispatchTool(toolName: string, args: unknown): Promise<{ allow: boolean; reason?: string; rule?: string; result?: unknown }>
-  pollInboxOnce(waitSeconds: number): Promise<{ kind: string; question_id?: string; answer?: string } | undefined>
+  /**
+   * kind is 'cancel' (M2, derived from run.state), 'answer' (M3's
+   * ask_human/ask_orchestrator round trip), or — M5 — 'worker_question' /
+   * 'worker_report' (af-subagent's check_workers reads these off payload).
+   */
+  pollInboxOnce(waitSeconds: number): Promise<{ kind: string; question_id?: string; answer?: string; payload?: unknown; from_run_id?: string } | undefined>
   /** POST /v1/runs/{id}/violations (M4) — af-policy's own runner-side deny, distinct from a mediated tool-dispatch deny (which internal/api records itself). */
   reportViolation(tool: string, reason: string): Promise<void>
   /** POST /v1/runs/{id}/usage (M4) — af-budget's periodic report; the response says whether this run just breached its cap. */

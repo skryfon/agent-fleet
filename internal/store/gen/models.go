@@ -42,16 +42,6 @@ type Budget struct {
 	BreachedAt     pgtype.Timestamptz `json:"breached_at"`
 }
 
-// Pause is the M4 kill switch (development-plan.md §4). scope is "global"
-// or "project:<uuid>" — see 0004_m4.up.sql's comment on why a plain text
-// key beats a (kind, id) pair here.
-type Pause struct {
-	Scope    string             `json:"scope"`
-	Actor    string             `json:"actor"`
-	Reason   *string            `json:"reason"`
-	PausedAt pgtype.Timestamptz `json:"paused_at"`
-}
-
 type Event struct {
 	ID        int64              `json:"id"`
 	RunID     pgtype.UUID        `json:"run_id"`
@@ -98,6 +88,13 @@ type Outbox struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type Pause struct {
+	Scope    string             `json:"scope"`
+	Actor    string             `json:"actor"`
+	Reason   *string            `json:"reason"`
+	PausedAt pgtype.Timestamptz `json:"paused_at"`
+}
+
 type Project struct {
 	ID           uuid.UUID          `json:"id"`
 	Slug         string             `json:"slug"`
@@ -125,6 +122,7 @@ type Question struct {
 	ZulipMessageID *string            `json:"zulip_message_id"`
 	NudgedAt       pgtype.Timestamptz `json:"nudged_at"`
 	EscalatedAt    pgtype.Timestamptz `json:"escalated_at"`
+	ToRunID        pgtype.UUID        `json:"to_run_id"`
 }
 
 type Run struct {
@@ -152,6 +150,15 @@ type Run struct {
 	ExitCode        *int32             `json:"exit_code"`
 }
 
+type RunInbox struct {
+	ID          int64              `json:"id"`
+	RunID       uuid.UUID          `json:"run_id"`
+	Kind        string             `json:"kind"`
+	Payload     []byte             `json:"payload"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	DeliveredAt pgtype.Timestamptz `json:"delivered_at"`
+}
+
 type Task struct {
 	ID                 uuid.UUID          `json:"id"`
 	FeatureID          uuid.UUID          `json:"feature_id"`
@@ -170,4 +177,7 @@ type Task struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 	NextEventSeq       int64              `json:"next_event_seq"`
 	Attempt            int32              `json:"attempt"`
+	ParentRunID        pgtype.UUID        `json:"parent_run_id"`
+	Depth              int32              `json:"depth"`
+	Role               *string            `json:"role"`
 }

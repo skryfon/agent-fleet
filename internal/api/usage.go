@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"agentfleet/internal/domain"
 	"agentfleet/internal/store"
 )
 
@@ -64,14 +63,33 @@ func (s *Server) recordUsage(w http.ResponseWriter, r *http.Request) {
 		s.Log.Error("api: recording budget_breached event failed", "error", err)
 	}
 
-	if _, err := s.Store.ApplyTaskTransition(r.Context(), s.Redact, store.TransitionRequest{
-		TaskID: task.ID, RunID: &run.ID, Trigger: domain.TrCancel, Actor: "budget:" + result.Breach.Kind,
-	}); err != nil {
+	actor := "budget:" + result.Breach.Kind
+
+	// M5: a run-scope breach only cancels its own subtree (the reporting
+	// task and anything it spawned) — the same "cap the runaway, not the
+	// whole feature" instinct as fanout.Check's per-run children cap. A
+	// FEATURE-scope breach means the aggregate is over budget regardless of
+	// which task tipped it, so every active task in the feature is
+	// cancelled, each as its own subtree root — otherwise a runaway
+	// worker's siblings would keep burning the feature's already-exhausted
+	// budget while this one task's own cancel is in flight.
+	if result.BreachScope == "feature" {
+		tasks, err := s.Store.Q().ListActiveTasksByFeature(r.Context(), task.FeatureID)
+		if err != nil {
+			s.Log.Error("api: listing active tasks for feature budget breach failed", "feature_id", task.FeatureID, "error", err)
+		}
+
+		for _, t := range tasks {
+			if _, err := s.Store.CancelSubtree(r.Context(), s.Redact, t.ID, actor); err != nil {
+				s.Log.Warn("api: cancelling task on feature budget breach failed", "task_id", t.ID, "error", err)
+			}
+		}
+	} else if _, err := s.Store.CancelSubtree(r.Context(), s.Redact, task.ID, actor); err != nil {
 		// The task may already be non-cancellable (e.g. a prior violation
 		// already cancelled it) — an illegal transition here is not this
 		// request's own failure to report, so log and still tell the caller
 		// it breached.
-		s.Log.Warn("api: cancelling task on budget breach failed", "task_id", task.ID, "error", err)
+		s.Log.Warn("api: cancelling task on run budget breach failed", "task_id", task.ID, "error", err)
 	}
 
 	writeJSON(w, http.StatusOK, usageResponse{Breached: true, Kind: result.Breach.Kind})

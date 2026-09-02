@@ -40,7 +40,8 @@ node "$bin" plugin --profile agentfleet-runner add \
   "link:$repo_root/runner/packages/af-control" \
   "link:$repo_root/runner/packages/af-ask-human" \
   "link:$repo_root/runner/packages/af-resume" \
-  "link:$repo_root/runner/packages/af-budget" >&2
+  "link:$repo_root/runner/packages/af-budget" \
+  "link:$repo_root/runner/packages/af-subagent" >&2
 
 mkdir -p "$scratch/target-repo"
 output="$(cd "$scratch/target-repo" && node "$bin" --profile agentfleet-runner --dump-config)"

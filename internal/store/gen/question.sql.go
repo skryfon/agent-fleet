@@ -15,7 +15,7 @@ import (
 const answerQuestion = `-- name: AnswerQuestion :one
 UPDATE question SET state = 'ANSWERED', answer = $2, answered_by = $3, answered_at = now()
 WHERE id = $1 AND state = 'OPEN'
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id
 `
 
 type AnswerQuestionParams struct {
@@ -44,13 +44,14 @@ func (q *Queries) AnswerQuestion(ctx context.Context, arg AnswerQuestionParams) 
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }
 
 const cancelQuestionsForRun = `-- name: CancelQuestionsForRun :many
 UPDATE question SET state = 'CANCELLED' WHERE run_id = $1 AND state = 'OPEN'
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id
 `
 
 // A run that's cancelled or killed shouldn't leave a dangling OPEN question
@@ -81,6 +82,7 @@ func (q *Queries) CancelQuestionsForRun(ctx context.Context, runID uuid.UUID) ([
 			&i.ZulipMessageID,
 			&i.NudgedAt,
 			&i.EscalatedAt,
+			&i.ToRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -93,9 +95,9 @@ func (q *Queries) CancelQuestionsForRun(ctx context.Context, runID uuid.UUID) ([
 }
 
 const createQuestion = `-- name: CreateQuestion :one
-INSERT INTO question (run_id, task_id, feature_id, kind, body, options, addressee, state)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+INSERT INTO question (run_id, task_id, feature_id, kind, body, options, addressee, state, to_run_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id
 `
 
 type CreateQuestionParams struct {
@@ -107,12 +109,20 @@ type CreateQuestionParams struct {
 	Options   []byte      `json:"options"`
 	Addressee *string     `json:"addressee"`
 	State     string      `json:"state"`
+	ToRunID   pgtype.UUID `json:"to_run_id"`
 }
 
 // feature_id (0003_questions.up.sql) is what question_one_open_per_feature_uk
 // enforces against — a second ask_human call for a feature with an already-
 // OPEN question fails this INSERT with a unique_violation, which
 // internal/store.ApplyAsk turns into ErrQuestionAlreadyOpen.
+//
+// to_run_id (0005_m5.up.sql) is NULL for a human-facing ask_human — it is
+// only set for D7's ask_orchestrator, naming the orchestrator run the
+// question is routed to instead of Zulip; question_one_open_per_feature_uk
+// is scoped WHERE to_run_id IS NULL so worker->orchestrator questions never
+// contend with each other or with the feature's own human-facing slot
+// (question_one_open_per_run_uk is what caps THOSE, one per asking run).
 func (q *Queries) CreateQuestion(ctx context.Context, arg CreateQuestionParams) (Question, error) {
 	row := q.db.QueryRow(ctx, createQuestion,
 		arg.RunID,
@@ -123,6 +133,7 @@ func (q *Queries) CreateQuestion(ctx context.Context, arg CreateQuestionParams) 
 		arg.Options,
 		arg.Addressee,
 		arg.State,
+		arg.ToRunID,
 	)
 	var i Question
 	err := row.Scan(
@@ -142,12 +153,13 @@ func (q *Queries) CreateQuestion(ctx context.Context, arg CreateQuestionParams) 
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }
 
 const getQuestionByID = `-- name: GetQuestionByID :one
-SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE id = $1
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id FROM question WHERE id = $1
 `
 
 func (q *Queries) GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error) {
@@ -170,12 +182,13 @@ func (q *Queries) GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, 
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }
 
 const getQuestionForUpdate = `-- name: GetQuestionForUpdate :one
-SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE id = $1 FOR UPDATE
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id FROM question WHERE id = $1 FOR UPDATE
 `
 
 // Locks the row for internal/api.answerQuestion's read-check-write (must
@@ -200,12 +213,13 @@ func (q *Queries) GetQuestionForUpdate(ctx context.Context, id uuid.UUID) (Quest
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }
 
 const listOpenQuestionsByFeature = `-- name: ListOpenQuestionsByFeature :many
-SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE feature_id = $1 AND state = 'OPEN' ORDER BY asked_at
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id FROM question WHERE feature_id = $1 AND state = 'OPEN' ORDER BY asked_at
 `
 
 // The Zulip bridge's inbound path resolves a topic reply to the one open
@@ -236,6 +250,7 @@ func (q *Queries) ListOpenQuestionsByFeature(ctx context.Context, featureID pgty
 			&i.ZulipMessageID,
 			&i.NudgedAt,
 			&i.EscalatedAt,
+			&i.ToRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -248,7 +263,7 @@ func (q *Queries) ListOpenQuestionsByFeature(ctx context.Context, featureID pgty
 }
 
 const listOpenQuestionsByRun = `-- name: ListOpenQuestionsByRun :many
-SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE run_id = $1 AND state = 'OPEN' ORDER BY asked_at
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id FROM question WHERE run_id = $1 AND state = 'OPEN' ORDER BY asked_at
 `
 
 // The inbox long-poll (GET /v1/runs/{id}/inbox) reads this to build the
@@ -279,6 +294,7 @@ func (q *Queries) ListOpenQuestionsByRun(ctx context.Context, runID uuid.UUID) (
 			&i.ZulipMessageID,
 			&i.NudgedAt,
 			&i.EscalatedAt,
+			&i.ToRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -291,7 +307,7 @@ func (q *Queries) ListOpenQuestionsByRun(ctx context.Context, runID uuid.UUID) (
 }
 
 const listOverdueQuestions = `-- name: ListOverdueQuestions :many
-SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at FROM question WHERE state = 'OPEN' AND asked_at < $1 ORDER BY asked_at
+SELECT id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id FROM question WHERE state = 'OPEN' AND asked_at < $1 ORDER BY asked_at
 `
 
 // internal/questions' timeout-ladder sweeper: every still-OPEN question
@@ -324,6 +340,7 @@ func (q *Queries) ListOverdueQuestions(ctx context.Context, askedAt pgtype.Times
 			&i.ZulipMessageID,
 			&i.NudgedAt,
 			&i.EscalatedAt,
+			&i.ToRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -337,7 +354,7 @@ func (q *Queries) ListOverdueQuestions(ctx context.Context, askedAt pgtype.Times
 
 const markQuestionEscalated = `-- name: MarkQuestionEscalated :one
 UPDATE question SET escalated_at = now() WHERE id = $1
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id
 `
 
 func (q *Queries) MarkQuestionEscalated(ctx context.Context, id uuid.UUID) (Question, error) {
@@ -360,13 +377,14 @@ func (q *Queries) MarkQuestionEscalated(ctx context.Context, id uuid.UUID) (Ques
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }
 
 const markQuestionNudged = `-- name: MarkQuestionNudged :one
 UPDATE question SET nudged_at = now() WHERE id = $1
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id
 `
 
 func (q *Queries) MarkQuestionNudged(ctx context.Context, id uuid.UUID) (Question, error) {
@@ -389,13 +407,14 @@ func (q *Queries) MarkQuestionNudged(ctx context.Context, id uuid.UUID) (Questio
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }
 
 const setQuestionZulipMessageID = `-- name: SetQuestionZulipMessageID :one
 UPDATE question SET zulip_message_id = $2 WHERE id = $1
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id
 `
 
 type SetQuestionZulipMessageIDParams struct {
@@ -426,13 +445,14 @@ func (q *Queries) SetQuestionZulipMessageID(ctx context.Context, arg SetQuestion
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }
 
 const timeoutQuestion = `-- name: TimeoutQuestion :one
 UPDATE question SET state = 'TIMED_OUT' WHERE id = $1 AND state = 'OPEN'
-RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at
+RETURNING id, run_id, task_id, kind, body, options, addressee, state, answer, answered_by, asked_at, answered_at, feature_id, zulip_message_id, nudged_at, escalated_at, to_run_id
 `
 
 // Timeouts never auto-answer (development-plan.md §6) — this only marks the
@@ -459,6 +479,7 @@ func (q *Queries) TimeoutQuestion(ctx context.Context, id uuid.UUID) (Question, 
 		&i.ZulipMessageID,
 		&i.NudgedAt,
 		&i.EscalatedAt,
+		&i.ToRunID,
 	)
 	return i, err
 }

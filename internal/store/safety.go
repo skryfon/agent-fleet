@@ -27,6 +27,10 @@ type UsageDelta struct {
 	TokensOut int64
 	CostUSD   float64
 	Minutes   int
+	// Questions is 0 for every caller except ApplyAsk (M5's question-cap
+	// enforcement, development-plan.md §6: "Cap questions per run (3) and
+	// per feature (10)") — af-budget's own usage reports never touch it.
+	Questions int
 }
 
 // UsageResult reports both scopes' post-increment spend and whichever
@@ -103,7 +107,7 @@ func incrementBudgetScope(ctx context.Context, q *db.Queries, scopeKind string, 
 
 	row, err := q.IncrementBudgetSpent(ctx, db.IncrementBudgetSpentParams{
 		ScopeKind: scopeKind, ScopeID: scopeID,
-		UsdSpent: numericParam(delta.CostUSD), MinutesSpent: int32(delta.Minutes), QuestionsAsked: 0, //nolint:gosec // deltas come from af-budget's own token meter, bounded well under int32
+		UsdSpent: numericParam(delta.CostUSD), MinutesSpent: int32(delta.Minutes), QuestionsAsked: int32(delta.Questions), //nolint:gosec // deltas come from af-budget's own token meter or a single ask_human/ask_orchestrator call, bounded well under int32
 	})
 	if err != nil {
 		return budget.Spent{}, fmt.Errorf("store: incrementing %s budget %s: %w", scopeKind, scopeID, err)

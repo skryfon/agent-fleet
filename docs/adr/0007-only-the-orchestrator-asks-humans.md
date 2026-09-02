@@ -25,8 +25,32 @@ manifest simply never grants `ask_human` to a worker (D9-style allow-list-first 
 - A worker with a question either gets answered by the orchestrator directly (routine)
   or has its question surfaced to Zulip *by* the orchestrator (genuinely blocking) —
   the orchestrator is a real filter, not a pass-through wire.
-- Before M5 (no orchestrator role yet), this decision is dormant: single-worker runs in
-  M1–M4 have no `ask_orchestrator` hop to make, and `ask_human` usage in that window is
-  scoped narrowly per M3's `af-ask-human` rollout.
 - Reinforces D4's one-topic-per-feature Zulip model — without this, a fanned-out
   feature would need one topic per worker instead of one per feature.
+
+## Implementation (M5)
+
+Enforced the same way as every other tool grant, allow-list first:
+`cmd/control-plane/main.go`'s process-wide manifest gives `orchestrator`
+`ask_human`/`spawn_worker`/`answer_worker` and gives `implementer`
+`ask_orchestrator`/`report_to_orchestrator` — **not** `ask_human`. `internal/policy`
+is the second line, gating on whichever tool name is actually dispatched.
+
+That second line only works because the tool name reaching it is real: `af-ask-human`
+(`runner/packages/af-ask-human`) originally dispatched the literal string `'ask_human'`
+for both tools it registers, so a worker's `ask_orchestrator` call was evaluated by
+`internal/policy` as `ask_human` and denied outright — a real bug, caught while writing
+this ADR's own enforcement test, fixed by threading the actual tool name through.
+
+`internal/store.ApplyAsk` picks `TrAskedOrchestrator` over `TrAsked` when the request
+carries a `ToRunID` (the orchestrator run): that trigger schedules no `zulip.question`
+effect, and instead enqueues a `run_inbox` row (kind `worker_question`) the orchestrator
+reads via its own `check_workers` tool. `question_one_open_per_feature_uk` is scoped
+`WHERE to_run_id IS NULL` so worker→orchestrator questions never contend with the
+feature's human-facing slot, or with each other beyond `question_one_open_per_run_uk`
+(one open ask_orchestrator per worker at a time).
+
+Verified end-to-end by `internal/api/m5_integration_test.go`'s
+`TestAskOrchestratorRoutesToParentRunNotZulip`: a worker's `ask_human` still 403s, its
+`ask_orchestrator` succeeds and provably enqueues no `zulip.question` outbox row, and
+the orchestrator's own inbox delivers the question.

@@ -44,6 +44,12 @@ func writeTransitionErr(w http.ResponseWriter, log *slog.Logger, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, errNoOrchestrator):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, errNotAddressedToCaller):
+		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, store.ErrQuestionBudgetBreached):
+		writeError(w, http.StatusTooManyRequests, err.Error())
 	default:
 		log.Error("api: internal error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

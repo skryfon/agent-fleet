@@ -3,8 +3,15 @@
 -- enforces against — a second ask_human call for a feature with an already-
 -- OPEN question fails this INSERT with a unique_violation, which
 -- internal/store.ApplyAsk turns into ErrQuestionAlreadyOpen.
-INSERT INTO question (run_id, task_id, feature_id, kind, body, options, addressee, state)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+--
+-- to_run_id (0005_m5.up.sql) is NULL for a human-facing ask_human — it is
+-- only set for D7's ask_orchestrator, naming the orchestrator run the
+-- question is routed to instead of Zulip; question_one_open_per_feature_uk
+-- is scoped WHERE to_run_id IS NULL so worker->orchestrator questions never
+-- contend with each other or with the feature's own human-facing slot
+-- (question_one_open_per_run_uk is what caps THOSE, one per asking run).
+INSERT INTO question (run_id, task_id, feature_id, kind, body, options, addressee, state, to_run_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetQuestionByID :one

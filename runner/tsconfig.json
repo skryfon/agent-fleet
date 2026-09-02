@@ -7,6 +7,7 @@
     { "path": "packages/af-control" },
     { "path": "packages/af-ask-human" },
     { "path": "packages/af-resume" },
-    { "path": "packages/af-budget" }
+    { "path": "packages/af-budget" },
+    { "path": "packages/af-subagent" }
   ]
 }
