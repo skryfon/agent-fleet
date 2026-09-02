@@ -542,6 +542,12 @@ Instrument from M2, review weekly.
 - **Policy violations** — should trend to zero.
 - **Lane distribution** — if 90% bypasses the spec lane, SDD adoption is cosmetic.
 - **dsh upgrade cost** — engineer-hours per version bump, from M4.5 onward.
+  First data point (dsh-v0.1.2-alpha.2 → alpha.3, `docs/upgrade-drills/`):
+  under 1 hour for the bump itself (zero typed drift, zero composition drift).
+  A separate ~2-hour cost surfaced during the same drill — a pre-existing,
+  environment-local container-build issue, confirmed unrelated to the bump by
+  reproducing it against the old pin too — not counted against dsh's
+  compatibility record.
 
 ---
 
