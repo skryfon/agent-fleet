@@ -43,6 +43,9 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: link:../../../deepseek-harness/packages/core/agent
         version: link:../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-token-meter':
+        specifier: link:../../../deepseek-harness/packages/llm/token-meter
+        version: link:../../../deepseek-harness/packages/llm/token-meter
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
