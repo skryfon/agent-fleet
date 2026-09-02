@@ -21,6 +21,11 @@ type effectPayload struct {
 	TaskID     string `json:"task_id"`
 	RunID      string `json:"run_id,omitempty"`
 	QuestionID string `json:"question_id,omitempty"`
+	// Tool/Reason: zulip.violation's own fields (internal/store.
+	// violationEffectPayload) — every other zulip.* topic leaves them
+	// empty.
+	Tool   string `json:"tool,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Store is the subset of *internal/store.Store Handlers needs — kept
@@ -105,6 +110,11 @@ func (h *Handlers) Notify(ctx context.Context, m outbox.Message) error {
 		return h.Client.Notify(ctx, NotifyRequest{
 			Topic:   topicName,
 			Content: fmt.Sprintf(":x: **%s** failed after exhausting its retries.", task.Title),
+		})
+	case "zulip.violation":
+		return h.Client.Notify(ctx, NotifyRequest{
+			Topic:   topicName,
+			Content: fmt.Sprintf(":rotating_light: **%s** — policy denied `%s`: %s", task.Title, p.Tool, p.Reason),
 		})
 	default:
 		// A topic this package didn't register for reaching Notify is a

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -65,6 +66,31 @@ func nullableUUIDParam(id *uuid.UUID) pgtype.UUID {
 	}
 
 	return uuidParam(*id)
+}
+
+// numericParam converts a plain float64 (a request body's cost_usd/usd_cap,
+// never itself a stored value on its own) to the pgtype.Numeric a `numeric`
+// column expects. Scan(string) is pgtype.Numeric's own documented decode
+// path — the same one Postgres text-protocol results already go through —
+// so this stays exact for the 4-decimal-place amounts development-plan.md
+// §6's budgets deal in, unlike a binary float64->Numeric conversion would.
+func numericParam(v float64) pgtype.Numeric {
+	var n pgtype.Numeric
+	_ = n.Scan(strconv.FormatFloat(v, 'f', 4, 64))
+
+	return n
+}
+
+// float64FromNumeric is numericParam's inverse, for reading a budget row's
+// spent/cap columns back out to evaluate against internal/budget.Caps/Spent
+// (plain float64 — that package has no reason to know about pgtype).
+func float64FromNumeric(n pgtype.Numeric) float64 {
+	f, err := n.Float64Value()
+	if err != nil || !f.Valid {
+		return 0
+	}
+
+	return f.Float64
 }
 
 // effectPayload is the JSON body every scheduled outbox row carries — enough
@@ -453,6 +479,116 @@ func (s *Store) ApplyAnswer(ctx context.Context, r *redact.Redactor, req AnswerR
 
 		result = AnswerResult{
 			Question: question,
+			Task:     TransitionResult{From: from, To: outcome.To, EventID: ev.ID, OutboxIDs: outboxIDs},
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
+// ErrApprovalArtifactNotFound is ApplyApproval's sentinel when subject_ref
+// names no known artifact — a 404, not a 500.
+var ErrApprovalArtifactNotFound = errors.New("store: no artifact found for subject_ref")
+
+// ErrApprovalSHAMismatch is ApplyApproval's sentinel for
+// development-plan.md §3's own invariant: "a revised artifact voids its
+// approval." internal/api's approvals handler turns this into a 409.
+var ErrApprovalSHAMismatch = errors.New("store: approval sha256 does not match the current artifact")
+
+// ApprovalRequest is what internal/api's approvals handler hands to
+// ApplyApproval.
+type ApprovalRequest struct {
+	SubjectKind string // 'spec' | 'plan' | 'pr' (artifact_kind_ck/approval_subject_kind_ck)
+	SubjectRef  string // the artifact's uri
+	Sha256      string
+	Decision    string // 'APPROVED' | 'REJECTED' (approval_decision_ck)
+	Actor       string
+	Note        *string
+	DedupeKey   *string
+}
+
+// ApprovalResult reports the recorded approval alongside the task
+// transition it caused.
+type ApprovalResult struct {
+	Approval db.Approval
+	Task     TransitionResult
+}
+
+// ApplyApproval is ApplyAsk's counterpart for the REVIEW gate
+// (development-plan.md §4 M4): resolve the artifact subject_ref names,
+// reject with ErrApprovalSHAMismatch if req.Sha256 doesn't match its
+// CURRENT sha256 (the artifact may have been re-opened since the human
+// last looked at it), insert the approval row, and drive TrApproved
+// (APPROVED) or TrCancel (REJECTED) — all in one WithTx, same atomicity as
+// every other Apply* method in this file.
+func (s *Store) ApplyApproval(ctx context.Context, r *redact.Redactor, req ApprovalRequest) (ApprovalResult, error) {
+	var result ApprovalResult
+
+	err := s.WithTx(ctx, func(q *db.Queries) error {
+		artifact, err := q.GetArtifactByURI(ctx, req.SubjectRef)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrApprovalArtifactNotFound
+			}
+
+			return fmt.Errorf("store: loading artifact %s: %w", req.SubjectRef, err)
+		}
+
+		if artifact.Sha256 != req.Sha256 {
+			return ErrApprovalSHAMismatch
+		}
+
+		approval, err := q.InsertApproval(ctx, db.InsertApprovalParams{
+			SubjectKind: req.SubjectKind, SubjectRef: req.SubjectRef, SubjectSha256: req.Sha256,
+			Decision: req.Decision, Actor: req.Actor, Note: req.Note,
+		})
+		if err != nil {
+			return fmt.Errorf("store: inserting approval: %w", err)
+		}
+
+		tr := domain.TrApproved
+		if req.Decision == "REJECTED" {
+			tr = domain.TrCancel
+		}
+
+		task, err := q.GetTaskForUpdate(ctx, artifact.TaskID)
+		if err != nil {
+			return fmt.Errorf("store: loading task %s for update: %w", artifact.TaskID, err)
+		}
+
+		tc := domain.TransitionContext{TaskID: artifact.TaskID.String(), RequestedBy: req.Actor}
+		from := domain.TaskState(task.State)
+
+		outcome, err := domain.NextTask(from, tr, tc)
+		if err != nil {
+			return err
+		}
+
+		if _, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
+			ID: artifact.TaskID, State: string(outcome.To),
+		}); err != nil {
+			return fmt.Errorf("store: updating task state: %w", err)
+		}
+
+		ev, err := insertTransitionEvent(ctx, q, r, pgtype.UUID{}, uuidParam(artifact.TaskID), task.NextEventSeq, outcome.Event, req.DedupeKey)
+		if err != nil {
+			return err
+		}
+
+		effPayloadJSON, err := json.Marshal(effectPayload{TaskID: artifact.TaskID.String()})
+		if err != nil {
+			return fmt.Errorf("store: marshaling effect payload: %w", err)
+		}
+
+		outboxIDs, err := enqueueEffects(ctx, q, outcome.Effects, ev.ID, effPayloadJSON)
+		if err != nil {
+			return err
+		}
+
+		result = ApprovalResult{
+			Approval: approval,
 			Task:     TransitionResult{From: from, To: outcome.To, EventID: ev.ID, OutboxIDs: outboxIDs},
 		}
 

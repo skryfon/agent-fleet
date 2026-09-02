@@ -6,6 +6,7 @@
     { "path": "packages/af-worktree" },
     { "path": "packages/af-control" },
     { "path": "packages/af-ask-human" },
-    { "path": "packages/af-resume" }
+    { "path": "packages/af-resume" },
+    { "path": "packages/af-budget" }
   ]
 }

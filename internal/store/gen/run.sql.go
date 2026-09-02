@@ -391,6 +391,55 @@ func (q *Queries) ListActiveRuns(ctx context.Context) ([]Run, error) {
 	return items, nil
 }
 
+const recordRunUsage = `-- name: RecordRunUsage :one
+UPDATE run
+SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3, cost_usd = cost_usd + $4,
+    version = version + 1, updated_at = now()
+WHERE id = $1
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+`
+
+type RecordRunUsageParams struct {
+	ID        uuid.UUID      `json:"id"`
+	TokensIn  int64          `json:"tokens_in"`
+	TokensOut int64          `json:"tokens_out"`
+	CostUsd   pgtype.Numeric `json:"cost_usd"`
+}
+
+// M4's usage handler (POST /v1/runs/{id}/usage, internal/api/usage.go):
+// tokens/cost accumulate on the run row itself, so the budget check always
+// sees the run's own running total, not just the latest delta a client
+// reported.
+func (q *Queries) RecordRunUsage(ctx context.Context, arg RecordRunUsageParams) (Run, error) {
+	row := q.db.QueryRow(ctx, recordRunUsage, arg.ID, arg.TokensIn, arg.TokensOut, arg.CostUsd)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.ParentRunID,
+		&i.Role,
+		&i.Model,
+		&i.ContainerID,
+		&i.DshSessionID,
+		&i.State,
+		&i.Checkpoint,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.TokensIn,
+		&i.TokensOut,
+		&i.CostUsd,
+		&i.CreatedAt,
+		&i.Version,
+		&i.UpdatedAt,
+		&i.NextEventSeq,
+		&i.TokenHash,
+		&i.LastHeartbeatAt,
+		&i.Attempt,
+		&i.ExitCode,
+	)
+	return i, err
+}
+
 const setRunContainerStarted = `-- name: SetRunContainerStarted :one
 UPDATE run
 SET state = $2, container_id = $3, started_at = now(),

@@ -112,16 +112,30 @@ func TestAuthAdminRejectsMissingOrWrongToken(t *testing.T) {
 	}
 }
 
-func TestDeferredRoutesReturn501(t *testing.T) {
+// TestApprovalsAndPauseAreWired is a narrow smoke test that M4 actually
+// replaced the M2 501 stubs — internal/store's own tests (once written)
+// cover the real behavior; this only proves the HTTP surface is live.
+func TestApprovalsAndPauseAreWired(t *testing.T) {
 	ts, _ := newTestServer(t)
 
-	// POST /v1/questions/{id}/answer is real as of M3 — see
-	// question_integration_test.go for its own coverage, not this list.
-	for _, path := range []string{"/v1/approvals", "/v1/admin/pause"} {
-		resp, _ := doJSON(t, http.MethodPost, ts.URL+path, adminToken, nil)
-		if resp.StatusCode != http.StatusNotImplemented {
-			t.Errorf("%s: status = %d, want 501", path, resp.StatusCode)
-		}
+	// A nonexistent artifact is a 404, never the 501 these routes used to
+	// return before M4.
+	resp, _ := doJSON(t, http.MethodPost, ts.URL+"/v1/approvals", adminToken,
+		[]byte(`{"subject_kind":"pr","subject_ref":"does-not-exist","sha256":"x","decision":"APPROVED"}`))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("/v1/approvals with unknown subject_ref: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Pause then resume the kill switch — both should succeed now that
+	// they're real.
+	resp, _ = doJSON(t, http.MethodPost, ts.URL+"/v1/admin/pause", adminToken, []byte(`{"scope":"global","reason":"smoke test"}`))
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST /v1/admin/pause: status = %d, want 204", resp.StatusCode)
+	}
+
+	resp, _ = doJSON(t, http.MethodDelete, ts.URL+"/v1/admin/pause?scope=global", adminToken, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /v1/admin/pause: status = %d, want 204", resp.StatusCode)
 	}
 }
 

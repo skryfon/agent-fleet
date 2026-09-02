@@ -2,6 +2,7 @@
 // tool exists in this package, deliberately (development-plan.md §5, D3).
 
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -10,6 +11,13 @@ const run = promisify(execFile)
 
 export const name = 'af-github'
 export const inject = ['tools']
+
+// ponytail: duplicated (not imported) from af-control's own RunClient —
+// same reasoning as af-ask-human's own copy (see that package's head
+// comment). Only the one method this plugin needs.
+interface RunClient {
+  dispatchTool(toolName: string, args: unknown): Promise<{ allow: boolean; reason?: string; rule?: string; result?: unknown }>
+}
 
 // ponytail: every tool here runs `git`/`gh` against process.cwd() (the repo
 // af-worktree's entrypoint puts us in). No repo-path config yet — add a
@@ -82,11 +90,45 @@ export function apply(ctx: Context): void {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
+    // M4: mediated (development-plan.md §4/§7 — PR creation is exactly the
+    // "anything crossing a boundary" this section names) so its policy
+    // decision is recorded, AND so the artifact POST /v1/approvals later
+    // binds an approval to actually gets written — see internal/api's
+    // pr_opened post-allow handler (tools.go).
     async execute(args, exec) {
+      const client = ctx.get('afControl') as RunClient | undefined
+      if (client === undefined) {
+        throw new Error('gh_pr_create: af-control is not configured (RUN_ID/AF_RUN_TOKEN/CONTROL_PLANE_URL unset) — not running under a real AgentFleet run')
+      }
+
       const base = args.base ?? 'main'
+
+      const dispatch = await client.dispatchTool('gh_pr_create', { title: args.title, body: args.body, base })
+      if (!dispatch.allow) {
+        throw new Error(`gh_pr_create: denied — ${dispatch.reason ?? dispatch.rule ?? 'no reason given'}`)
+      }
+
       const ghArgs = ['pr', 'create', '--title', args.title, '--body', args.body, '--base', base]
       const { stdout } = await run('gh', ghArgs, { signal: exec.signal })
-      return stdout.trim()
+      const url = stdout.trim()
+
+      const { stdout: headSHA } = await run('git', ['rev-parse', 'HEAD'], { signal: exec.signal })
+      const { stdout: diff } = await run('git', ['diff', `origin/${base}...HEAD`], { signal: exec.signal, maxBuffer: 64 * 1024 * 1024 })
+      const diffSHA256 = createHash('sha256').update(diff).digest('hex')
+
+      const opened = await client.dispatchTool('pr_opened', {
+        url, head_sha: headSHA.trim(), diff_sha256: diffSHA256, base,
+      })
+      if (!opened.allow) {
+        // The PR itself already exists (gh_pr_create above succeeded) —
+        // this second dispatch only records the artifact an approval binds
+        // to. A deny here means REVIEW->DONE has nothing to approve against
+        // until a human notices and re-runs it by hand; surfaced as a tool
+        // error rather than silently returning success.
+        throw new Error(`pr_opened: denied — ${opened.reason ?? opened.rule ?? 'no reason given'}`)
+      }
+
+      return url
     },
   }))
 }

@@ -304,7 +304,17 @@ func (s *Server) listTasksByState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tasks)
 }
 
+// startTask is fail-closed on the M4 kill switch (development-plan.md §4):
+// a paused deployment must not accept new launches, even though an
+// already-running task keeps going until something actively kills it (the
+// `kill: true` sweep on POST /v1/admin/pause, or a human cancel).
 func (s *Server) startTask(w http.ResponseWriter, r *http.Request) {
+	if err := s.Store.CheckPause(r.Context(), "global"); err != nil {
+		writeError(w, http.StatusConflict, "deployment is paused")
+
+		return
+	}
+
 	s.applyTaskTrigger(w, r, domain.TrStart, "api:start")
 }
 

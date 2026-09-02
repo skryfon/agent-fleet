@@ -42,6 +42,8 @@ type Querier interface {
 	CreateFeature(ctx context.Context, arg CreateFeatureParams) (Feature, error)
 	CreateIdentity(ctx context.Context, arg CreateIdentityParams) (Identity, error)
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
+	// DELETE /v1/admin/pause?scope=... (resume).
+	DeletePause(ctx context.Context, scope string) error
 	// feature_id (0003_questions.up.sql) is what question_one_open_per_feature_uk
 	// enforces against — a second ask_human call for a feature with an already-
 	// OPEN question fails this INSERT with a unique_violation, which
@@ -62,7 +64,14 @@ type Querier interface {
 	// run_active_per_task_uk (0002_control_plane.up.sql) guarantees at most one
 	// row matches.
 	GetActiveRunForTask(ctx context.Context, taskID uuid.UUID) (Run, error)
+	// POST /v1/approvals looks a PR up by its url (subject_ref) to fetch the
+	// sha256 an approval must match.
+	GetArtifactByURI(ctx context.Context, uri string) (Artifact, error)
 	GetFeatureByID(ctx context.Context, id uuid.UUID) (Feature, error)
+	// cmd/bridge's review-by-zulip-topic lookup (M4): a task in REVIEW has
+	// exactly one PR artifact in the ordinary case, but this takes the latest
+	// if af-github's gh_pr_create ever runs twice for the same task.
+	GetLatestArtifactByTask(ctx context.Context, taskID uuid.UUID) (Artifact, error)
 	GetFeatureByProjectSlug(ctx context.Context, arg GetFeatureByProjectSlugParams) (Feature, error)
 	// cmd/bridge's inbound path (M3): resolve a Zulip topic reply back to the
 	// feature it belongs to. Falls back to matching the feature's own slug
@@ -76,6 +85,7 @@ type Querier interface {
 	// REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
 	// exactly one repo before M6's multi-repo manifest work.
 	GetLaunchContext(ctx context.Context, id uuid.UUID) (GetLaunchContextRow, error)
+	GetPause(ctx context.Context, scope string) (Pause, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (Project, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error)
@@ -90,6 +100,7 @@ type Querier interface {
 	// step of internal/store.ApplyTaskTransition (P3), so concurrent triggers
 	// against the same task serialize instead of racing.
 	GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, error)
+	IncrementBudgetSpent(ctx context.Context, arg IncrementBudgetSpentParams) (Budget, error)
 	IncrementRunAttempt(ctx context.Context, id uuid.UUID) (Run, error)
 	// Bumps next_event_seq (under the row lock the caller already holds via
 	// GetRunForUpdate) without touching run.state — internal/store.RecordEvent
@@ -111,6 +122,16 @@ type Querier interface {
 	// read it from task.next_event_seq/run.next_event_seq under the same
 	// FOR UPDATE lock as the state change, so it is race-free without a
 	// separate sequence object.
+	// M4: internal/api's pr_opened mediated-tool handler inserts one of these
+	// per PR the implementer opens — its sha256 (a diff hash, not the PR body)
+	// is what POST /v1/approvals binds an approval to (development-plan.md §3:
+	// "approval.subject_sha256 is mandatory ... a revised artifact voids its
+	// approval").
+	InsertArtifact(ctx context.Context, arg InsertArtifactParams) (Artifact, error)
+	// POST /v1/approvals (development-plan.md §4/§3). No update path — every
+	// decision is its own row, per the same append-mostly instinct the `event`
+	// table follows (a re-decision is a new approval, not a mutated one).
+	InsertApproval(ctx context.Context, arg InsertApprovalParams) (Approval, error)
 	InsertControlPlaneEvent(ctx context.Context, arg InsertControlPlaneEventParams) (Event, error)
 	// token_hash is the sha256 of the per-run bearer token; the plaintext is
 	// never persisted (development-plan.md §8 Secrets) — internal/supervisor
@@ -161,6 +182,7 @@ type Querier interface {
 	ListProjects(ctx context.Context) ([]Project, error)
 	ListTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error)
 	ListTasksByState(ctx context.Context, state string) ([]Task, error)
+	MarkBudgetBreached(ctx context.Context, arg MarkBudgetBreachedParams) error
 	MarkOutboxPublished(ctx context.Context, id int64) error
 	MarkQuestionEscalated(ctx context.Context, id uuid.UUID) (Question, error)
 	MarkQuestionNudged(ctx context.Context, id uuid.UUID) (Question, error)
@@ -168,6 +190,11 @@ type Querier interface {
 	// guessed client-side (runner/packages/af-control's own comment on the same
 	// rule).
 	MirrorHighWaterSeq(ctx context.Context, runID uuid.UUID) (int64, error)
+	// M4's usage handler (POST /v1/runs/{id}/usage, internal/api/usage.go):
+	// tokens/cost accumulate on the run row itself, so the budget check always
+	// sees the run's own running total, not just the latest delta a client
+	// reported.
+	RecordRunUsage(ctx context.Context, arg RecordRunUsageParams) (Run, error)
 	RescheduleOutbox(ctx context.Context, arg RescheduleOutboxParams) error
 	SetFeatureTasksMdSHA256(ctx context.Context, arg SetFeatureTasksMdSHA256Params) error
 	// internal/zulip.Handlers.Notify calls this after a successful post, making
@@ -189,6 +216,18 @@ type Querier interface {
 	// POST /v1/runs/{id}/checkpoint (P4) calls this; internal/reconcile's
 	// "stale runs" job (P8) reads last_heartbeat_at back out via GetRunByID.
 	TouchRunHeartbeat(ctx context.Context, id uuid.UUID) error
+	// Seeds a scope's caps on first use (internal/api's usage handler calls
+	// this before every IncrementBudgetSpent) — the manifest compiler that will
+	// own real per-project caps doesn't exist until M6, so cmd/control-plane's
+	// process-wide default Caps is what flows in here today, same documented
+	// stand-in as internal/api.Server.Manifest. ON CONFLICT DO UPDATE with a
+	// self-assignment (not DO NOTHING) is the standard sqlc/Postgres trick to
+	// still get a RETURNING row on the conflict path.
+	UpsertBudgetCaps(ctx context.Context, arg UpsertBudgetCapsParams) (Budget, error)
+	// POST /v1/admin/pause. ON CONFLICT re-stamps actor/reason/paused_at rather
+	// than erroring — re-pausing an already-paused scope (e.g. a second admin
+	// hitting the kill switch) is idempotent, not a 409.
+	UpsertPause(ctx context.Context, arg UpsertPauseParams) (Pause, error)
 	UpdateRunState(ctx context.Context, arg UpdateRunStateParams) (Run, error)
 	// The only place task.state ever changes. version is bumped for the SSE/
 	// read-path optimistic-concurrency story; the transition's own atomicity

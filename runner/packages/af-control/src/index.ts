@@ -34,12 +34,16 @@ interface MirrorEvent {
   at: string
 }
 
-/** Shared by af-ask-human — kept here since af-control owns run/token/URL config. */
+/** Shared by af-ask-human/af-policy/af-budget — kept here since af-control owns run/token/URL config. */
 export interface RunClient {
   postEvents(events: MirrorEvent[]): Promise<void>
   checkpoint(dshSessionID: string | undefined): Promise<void>
   dispatchTool(toolName: string, args: unknown): Promise<{ allow: boolean; reason?: string; rule?: string; result?: unknown }>
   pollInboxOnce(waitSeconds: number): Promise<{ kind: string; question_id?: string; answer?: string } | undefined>
+  /** POST /v1/runs/{id}/violations (M4) — af-policy's own runner-side deny, distinct from a mediated tool-dispatch deny (which internal/api records itself). */
+  reportViolation(tool: string, reason: string): Promise<void>
+  /** POST /v1/runs/{id}/usage (M4) — af-budget's periodic report; the response says whether this run just breached its cap. */
+  postUsage(delta: { tokens_in: number; tokens_out: number; cost_usd: number; minutes: number }): Promise<{ breached: boolean; kind?: string }>
 }
 
 function buildClient(controlPlaneURL: string, runID: string, runToken: string): RunClient {
@@ -65,6 +69,13 @@ function buildClient(controlPlaneURL: string, runID: string, runToken: string): 
       if (res.status === 204) return undefined
 
       return res.json() as Promise<{ kind: string; question_id?: string; answer?: string }>
+    },
+    async reportViolation(tool, reason) {
+      await fetch(`${base}/violations`, { method: 'POST', headers, body: JSON.stringify({ tool, reason }) })
+    },
+    async postUsage(delta) {
+      const res = await fetch(`${base}/usage`, { method: 'POST', headers, body: JSON.stringify(delta) })
+      return res.json() as Promise<{ breached: boolean; kind?: string }>
     },
   }
 }

@@ -137,3 +137,40 @@ func (c *controlPlaneClient) AnswerQuestion(ctx context.Context, questionID, ans
 
 	return err
 }
+
+type reviewTarget struct {
+	TaskID     string `json:"task_id"`
+	SubjectRef string `json:"subject_ref"`
+	SHA256     string `json:"sha256"`
+}
+
+// GetReviewByZulipTopic resolves a Zulip topic to the task currently in
+// REVIEW there and the PR artifact an approval binds to (M4). Returns
+// errNotFound when the topic has no feature, or that feature has no task
+// in REVIEW.
+func (c *controlPlaneClient) GetReviewByZulipTopic(ctx context.Context, topic string) (reviewTarget, error) {
+	raw, err := c.do(ctx, http.MethodGet, "/v1/tasks:review-by-zulip-topic?zulip_topic="+url.QueryEscape(topic), nil)
+	if err != nil {
+		return reviewTarget{}, err
+	}
+
+	var t reviewTarget
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return reviewTarget{}, fmt.Errorf("control-plane client: parsing review target: %w", err)
+	}
+
+	return t, nil
+}
+
+// Approve calls POST /v1/approvals with the exact sha256 GetReviewByZulipTopic
+// just quoted — a PR revised between that lookup and this reaction fails
+// internal/store.ApplyApproval's sha256 check (409) rather than silently
+// approving stale content (development-plan.md §3).
+func (c *controlPlaneClient) Approve(ctx context.Context, target reviewTarget, decision, actor string) error {
+	_, err := c.do(ctx, http.MethodPost, "/v1/approvals", map[string]string{
+		"subject_kind": "pr", "subject_ref": target.SubjectRef, "sha256": target.SHA256,
+		"decision": decision, "note": "via Zulip: " + actor,
+	})
+
+	return err
+}

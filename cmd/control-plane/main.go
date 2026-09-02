@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"agentfleet/internal/api"
+	"agentfleet/internal/budget"
 	"agentfleet/internal/outbox"
 	"agentfleet/internal/policy"
 	"agentfleet/internal/questions"
@@ -120,9 +121,18 @@ func run(log *slog.Logger) error {
 		Manifest: policy.Manifest{
 			Roles: map[string]policy.Role{
 				"orchestrator": {MediatedTools: []string{"ask_human"}},
-				"implementer":  {MediatedTools: []string{"ask_human"}},
+				// gh_pr_create/pr_opened (M4): the mediated PR-creation round
+				// trip af-github's gh_pr_create now makes (runner/packages/
+				// af-github) — see internal/policy's package doc for why
+				// even an allow-listed tool still passes through here.
+				"implementer": {MediatedTools: []string{"ask_human", "gh_pr_create", "pr_opened"}},
 			},
 		},
+		// M4 hard-kill caps (development-plan.md §5's manifest example: "budget:
+		// { usd: 8, minutes: 45, questions: 3 }"). Process-wide until M6's
+		// manifest compiler owns per-project caps — same documented stand-in
+		// as Manifest above.
+		BudgetCaps: budget.Caps{USD: 8, Minutes: 45, Questions: 3},
 	}
 
 	httpServer := &http.Server{
@@ -167,6 +177,7 @@ func run(log *slog.Logger) error {
 	relay.Handle("zulip.question", zulipHandlers.Notify)
 	relay.Handle("zulip.review", zulipHandlers.Notify)
 	relay.Handle("zulip.failed", zulipHandlers.Notify)
+	relay.Handle("zulip.violation", zulipHandlers.Notify)
 
 	sweeper := &questions.Sweeper{
 		Store: st, Redact: redactor, Zulip: zulipHandlers.Client, Log: log, Config: questions.DefaultConfig(),

@@ -92,3 +92,14 @@ WHERE t.id = $1;
 -- forcing every event to pretend to be a state change.
 UPDATE run SET next_event_seq = next_event_seq + 1, updated_at = now() WHERE id = $1
 RETURNING *;
+
+-- name: RecordRunUsage :one
+-- M4's usage handler (POST /v1/runs/{id}/usage, internal/api/usage.go):
+-- tokens/cost accumulate on the run row itself, so the budget check always
+-- sees the run's own running total, not just the latest delta a client
+-- reported.
+UPDATE run
+SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3, cost_usd = cost_usd + $4,
+    version = version + 1, updated_at = now()
+WHERE id = $1
+RETURNING *;

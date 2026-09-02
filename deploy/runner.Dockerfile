@@ -62,6 +62,18 @@ RUN apt-get update \
 
 RUN useradd --create-home --shell /bin/bash agentfleet
 
+# M4 egress proxy (development-plan.md §8, §4 layer 4): mitmproxy terminates
+# TLS to filter `PUT /repos/*/pulls/*/merge`
+# (deploy/egress-proxy/addon.py), so every outbound HTTPS call from inside
+# this container must trust its CA — baked in at build time (a regenerated
+# CA would otherwise break every already-built runner image; see
+# docs/adr/0016). NODE_EXTRA_CA_CERTS covers Node's own fetch/https client
+# (dsh's LLM/session calls, af-control's fetch calls); update-ca-certificates
+# covers `git`/`gh`/curl.
+COPY deploy/egress-proxy/ca/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/agentfleet-egress-proxy.crt
+RUN update-ca-certificates
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/agentfleet-egress-proxy.crt
+
 COPY --from=build /opt/deepseek-harness /opt/deepseek-harness
 COPY --from=build /opt/runner /opt/runner
 COPY deploy/runner-entrypoint.sh /opt/runner-entrypoint.sh
@@ -81,6 +93,7 @@ RUN node /opt/deepseek-harness/apps/cli/lib/bin.js plugin --profile agentfleet-r
       "link:/opt/runner/packages/af-control" \
       "link:/opt/runner/packages/af-ask-human" \
       "link:/opt/runner/packages/af-resume" \
+      "link:/opt/runner/packages/af-budget" \
     && node -e "const fs=require('node:fs'); const p='$DSH_HOME/profiles/agentfleet-runner/package.json'; const m=JSON.parse(fs.readFileSync(p)); m.dsh.profile.patchReload='startup'; fs.writeFileSync(p, JSON.stringify(m,null,2)+'\n')"
 COPY deploy/runner-settings.yaml $DSH_HOME/settings.yaml
 

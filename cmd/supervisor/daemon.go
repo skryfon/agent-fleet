@@ -225,6 +225,18 @@ func (d *daemon) spec(req launchRequest) podman.Spec {
 		env["AF_RESUME_ANSWER"] = req.Answer
 	}
 
+	// M4 layer 4 (development-plan.md §8): every outbound call from inside
+	// the container routes through the egress proxy, which is the only
+	// thing on [runners, egress] besides the runner itself — `runners` is
+	// internal: true, so this is the sole path out. NO_PROXY exempts the
+	// control-plane API (same [core] network as this daemon, no MITM
+	// needed or possible — it isn't HTTPS).
+	if d.cfg.egressProxyURL != "" {
+		env["HTTP_PROXY"] = d.cfg.egressProxyURL
+		env["HTTPS_PROXY"] = d.cfg.egressProxyURL
+		env["NO_PROXY"] = "control-plane"
+	}
+
 	return podman.Spec{
 		Name:            containerName(req.RunID),
 		Image:           d.cfg.runnerImage,

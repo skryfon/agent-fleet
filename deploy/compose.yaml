@@ -115,6 +115,7 @@ services:
       MAX_CONCURRENT_RUNS: ${MAX_CONCURRENT_RUNS:-3}
       GH_TOKEN: ${GH_TOKEN}
       OMNI_ROUTE_API_KEY: ${OMNI_ROUTE_API_KEY}
+      EGRESS_PROXY_URL: "http://egress-proxy:8080"
     # PODMAN_SOCKET_DIR, not XDG_RUNTIME_DIR: podman itself (the CLI running
     # `compose up`) also reads XDG_RUNTIME_DIR for its own state — verified
     # live that setting it to point compose at the socket breaks the podman
@@ -176,8 +177,23 @@ services:
       control-plane:
         condition: service_healthy
 
+  # M4 (development-plan.md §8, §4 layer 4): the runner's only route out —
+  # `runners` is internal: true (no direct egress), so this is the sole path
+  # to api.deepseek.com/GitHub/module proxies, and the sole enforcement
+  # point for "no PUT .../pulls/*/merge" that doesn't depend on the runner's
+  # own cooperation. `ca/` (bind-mounted, both here and baked into
+  # deploy/runner.Dockerfile) is generated once by `make egress-ca` — see
+  # deploy/egress-proxy/Dockerfile's own comment on why it isn't
+  # regenerated on every restart.
+  egress-proxy:
+    build:
+      context: ./egress-proxy
+      dockerfile: Dockerfile
+    networks: [runners, egress]
+    volumes:
+      - ./egress-proxy/ca:/home/mitmproxy/.mitmproxy:z
+
   # webapp:        [edge, core] — M7
-  # egress-proxy:  [runners, egress], filters PUT /repos/*/pulls/*/merge — M4
 
 volumes:
   agentfleet-postgres:

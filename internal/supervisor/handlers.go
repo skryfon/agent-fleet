@@ -34,6 +34,10 @@ type effectPayload struct {
 // without a real Postgres.
 type Store interface {
 	Q() *db.Queries
+	// CheckPause gates RunLaunch on the M4 kill switch — see this method's
+	// own doc comment on internal/store.Store for why only "global" is
+	// actually checked.
+	CheckPause(ctx context.Context, scope string) error
 }
 
 // Handlers holds run.launch/run.kill's dependencies. Register both with an
@@ -89,6 +93,16 @@ func tokenHash(token string) []byte {
 // Create is itself idempotent by container name, so a daemon call that
 // already succeeded once is a cheap no-op on retry.
 func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
+	// Re-checked here, not just at POST /v1/tasks/{id}/start (internal/api's
+	// own startTask check): a run.launch row enqueued a moment before an
+	// admin hit the kill switch must not start a container just because it
+	// beat the pause into the queue. A plain (non-ErrPoison) error retries
+	// with backoff — this stays queued and launches once resumed, per
+	// development-plan.md §4's kill switch, rather than being dropped.
+	if err := h.Store.CheckPause(ctx, "global"); err != nil {
+		return fmt.Errorf("run.launch: %w", err)
+	}
+
 	var p effectPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return fmt.Errorf("%w: run.launch: invalid payload: %v", outbox.ErrPoison, err)

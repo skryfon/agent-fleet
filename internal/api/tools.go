@@ -38,6 +38,16 @@ type askHumanResult struct {
 	QuestionID string `json:"question_id"`
 }
 
+// prOpenedArgs is af-github's post-creation report (runner/packages/
+// af-github, M4) — the sha256 POST /v1/approvals will later be asked to
+// match.
+type prOpenedArgs struct {
+	URL        string `json:"url"`
+	HeadSHA    string `json:"head_sha"`
+	DiffSHA256 string `json:"diff_sha256"`
+	Base       string `json:"base"`
+}
+
 // dispatchTool is the mediated-tool-dispatch endpoint
 // (development-plan.md §4: "Mediated tools ... go through the API so the
 // decision is recorded as an event"). The policy decision — allow or deny —
@@ -60,16 +70,6 @@ func (s *Server) dispatchTool(w http.ResponseWriter, r *http.Request) {
 		Role: run.Role, Tool: tool, Args: args, Manifest: s.Manifest,
 	})
 
-	kind := "tool_dispatch_allowed"
-	if !decision.Allow {
-		kind = "tool_dispatch_denied"
-	}
-
-	payload := map[string]any{"tool": tool, "rule": decision.Rule}
-	if !decision.Allow {
-		payload["reason"] = decision.Reason
-	}
-
 	// Flagged in DB review: unlike every transition-writing path,
 	// RecordEvent originally had no way to dedupe a client-side retry (a
 	// tool-dispatch client retrying a POST whose response was lost), which
@@ -82,19 +82,34 @@ func (s *Server) dispatchTool(w http.ResponseWriter, r *http.Request) {
 		dedupeKey = &k
 	}
 
-	if _, err := s.Store.RecordEvent(r.Context(), s.Redact, run.ID, kind, payload, dedupeKey); err != nil {
-		writeTransitionErr(w, s.Log, err)
-
-		return
-	}
-
 	if !decision.Allow {
+		// RecordViolation (not plain RecordEvent) so the denial reaches
+		// Zulip (development-plan.md §4 M4) — a mediated deny is the
+		// control-plane's OWN policy.Evaluate saying no, source
+		// "control_plane"; af-policy's runner-side deny (a different tool
+		// entirely, never reaching this handler) reports itself via
+		// POST /v1/runs/{id}/violations instead (violations.go).
+		if _, err := s.Store.RecordViolation(r.Context(), s.Redact, run.ID, tool, decision.Reason, "control_plane", dedupeKey); err != nil {
+			writeTransitionErr(w, s.Log, err)
+
+			return
+		}
+
 		writeJSON(w, http.StatusForbidden, dispatchToolResponse{Allow: false, Reason: decision.Reason, Rule: decision.Rule})
 
 		return
 	}
 
-	if tool == "ask_human" {
+	payload := map[string]any{"tool": tool, "rule": decision.Rule}
+
+	if _, err := s.Store.RecordEvent(r.Context(), s.Redact, run.ID, "tool_dispatch_allowed", payload, dedupeKey); err != nil {
+		writeTransitionErr(w, s.Log, err)
+
+		return
+	}
+
+	switch tool {
+	case "ask_human":
 		result, err := s.askHuman(r, run, args)
 		if err != nil {
 			writeTransitionErr(w, s.Log, err)
@@ -112,6 +127,12 @@ func (s *Server) dispatchTool(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, dispatchToolResponse{Allow: true, Rule: decision.Rule, Result: resultJSON})
 
 		return
+	case "pr_opened":
+		if err := s.prOpened(r, run, args); err != nil {
+			writeTransitionErr(w, s.Log, err)
+
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, dispatchToolResponse{Allow: true, Rule: decision.Rule})
@@ -150,4 +171,28 @@ func (s *Server) askHuman(r *http.Request, run db.Run, rawArgs []byte) (askHuman
 	}
 
 	return askHumanResult{QuestionID: result.Question.ID.String()}, nil
+}
+
+// prOpened is dispatchTool's post-allow action for M4's second mediated
+// tool with real behavior: it records the artifact af-github's gh_pr_create
+// just opened so POST /v1/approvals has a sha256 to bind an approval to
+// (development-plan.md §3: "approval.subject_sha256 is mandatory"). Unlike
+// askHuman it doesn't drive a task transition itself — the task is already
+// heading to REVIEW via the run's own eventual exit (TrRunExitedOK); this
+// only has to exist BEFORE that REVIEW notification goes out, which is
+// af-github's own ordering (dispatch pr_opened, then exit).
+func (s *Server) prOpened(r *http.Request, run db.Run, rawArgs []byte) error {
+	var args prOpenedArgs
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return fmt.Errorf("pr_opened: parsing arguments: %w", err)
+	}
+
+	_, err := s.Store.Q().InsertArtifact(r.Context(), db.InsertArtifactParams{
+		TaskID: run.TaskID, Kind: "pr", Uri: args.URL, Sha256: args.DiffSHA256,
+	})
+	if err != nil {
+		return fmt.Errorf("pr_opened: recording artifact: %w", err)
+	}
+
+	return nil
 }

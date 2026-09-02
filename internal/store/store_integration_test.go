@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"agentfleet/internal/redact"
 	"agentfleet/internal/store"
 	db "agentfleet/internal/store/gen"
 )
@@ -300,5 +301,59 @@ func TestEventAppendOnlyTrigger(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "append-only") {
 		t.Fatalf("UPDATE against event failed, but not with the append-only trigger's message: %v", err)
+	}
+}
+
+// TestCanarySecretNeverReachesEvent is development-plan.md §8's own
+// prescribed check: "redaction filter applies to every emitted event; test
+// it with a canary string." Pushes one literal through every documented
+// redaction choke point (internal/redact's package doc: RecordEvent/
+// RecordViolation/ApplyTaskTransition and AppendMirror) and asserts it
+// never lands in the `event` table.
+func TestCanarySecretNeverReachesEvent(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	taskID, runID := seedTaskAndRun(t, s)
+
+	const canary = "CANARY-SECRET-do-not-persist-9f3a"
+
+	r := redact.New([]string{canary}, nil)
+
+	if _, err := s.RecordEvent(ctx, r, runID, "test_canary", map[string]any{"note": canary}, nil); err != nil {
+		t.Fatalf("RecordEvent: %v", err)
+	}
+
+	if _, err := s.RecordViolation(ctx, r, runID, "bash", canary, "runner", nil); err != nil {
+		t.Fatalf("RecordViolation: %v", err)
+	}
+
+	if _, err := s.ApplyTaskTransition(ctx, r, store.TransitionRequest{
+		TaskID: taskID, RunID: &runID, Trigger: "cancel", Actor: "test",
+		Payload: map[string]any{"note": canary},
+	}); err != nil {
+		t.Fatalf("ApplyTaskTransition: %v", err)
+	}
+
+	now := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+	if _, err := s.AppendMirror(ctx, r, store.MirrorBatch{
+		RunID: runID, TaskID: taskID,
+		Events: []store.MirrorEvent{{Seq: 999, Kind: "test", Actor: "agent", Payload: []byte(`{"note":"` + canary + `"}`), At: now.Time}},
+	}); err != nil {
+		t.Fatalf("AppendMirror: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM event WHERE payload::text LIKE '%' || $1 || '%'", canary).Scan(&count); err != nil {
+		t.Fatalf("querying for canary leakage: %v", err)
+	}
+
+	if count != 0 {
+		t.Fatalf("canary secret found in %d event row(s) — redaction did not apply", count)
 	}
 }

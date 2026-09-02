@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS pause;
+
+ALTER TABLE budget DROP COLUMN IF EXISTS breached_at;
+ALTER TABLE budget DROP COLUMN IF EXISTS updated_at;

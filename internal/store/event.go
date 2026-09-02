@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"agentfleet/internal/domain"
@@ -160,4 +162,80 @@ func (s *Store) RecordEvent(ctx context.Context, r *redact.Redactor, runID uuid.
 	})
 
 	return ev, err
+}
+
+// RecordViolation is RecordEvent's counterpart for a policy denial that a
+// human must see (development-plan.md §4 M4: "the violation reaches Zulip
+// within seconds"). Unlike RecordEvent it also enqueues the zulip.violation
+// outbox effect, in the same transaction — same atomicity guarantee as
+// every ApplyTaskTransition/ApplyAsk write in transition.go, just without a
+// task-state change riding along.
+func (s *Store) RecordViolation(ctx context.Context, r *redact.Redactor, runID uuid.UUID, tool, reason, source string, dedupeKey *string) (db.Event, error) {
+	var ev db.Event
+
+	err := s.WithTx(ctx, func(q *db.Queries) error {
+		run, err := q.GetRunForUpdate(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("store: loading run %s for update: %w", runID, err)
+		}
+
+		if _, err := q.IncrementRunEventSeq(ctx, runID); err != nil {
+			return fmt.Errorf("store: bumping run event seq: %w", err)
+		}
+
+		payloadJSON, err := json.Marshal(map[string]any{"tool": tool, "reason": reason, "source": source})
+		if err != nil {
+			return fmt.Errorf("store: marshaling violation payload: %w", err)
+		}
+
+		redacted, err := r.JSON(payloadJSON)
+		if err != nil {
+			return fmt.Errorf("store: redacting violation payload: %w", err)
+		}
+
+		row, err := q.InsertControlPlaneEvent(ctx, db.InsertControlPlaneEventParams{
+			RunID:     uuidParam(runID),
+			TaskID:    uuidParam(run.TaskID),
+			Seq:       run.NextEventSeq,
+			Kind:      "policy_violation",
+			Actor:     domain.ActorControlPlane,
+			Payload:   redacted,
+			DedupeKey: dedupeKey,
+		})
+		if err != nil {
+			return fmt.Errorf("store: inserting violation event: %w", err)
+		}
+
+		ev = row
+
+		effPayload := violationEffectPayload{TaskID: run.TaskID.String(), RunID: runID.String(), Tool: tool, Reason: reason}
+
+		effPayloadJSON, err := json.Marshal(effPayload)
+		if err != nil {
+			return fmt.Errorf("store: marshaling violation effect payload: %w", err)
+		}
+
+		key := fmt.Sprintf("violation:%d", row.ID)
+		if _, err := q.EnqueueOutbox(ctx, db.EnqueueOutboxParams{
+			Topic: "zulip.violation", Payload: effPayloadJSON, Key: &key,
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("store: enqueueing zulip.violation effect: %w", err)
+		}
+
+		return nil
+	})
+
+	return ev, err
+}
+
+// violationEffectPayload is zulip.violation's own outbox payload shape —
+// effectPayload (transition.go) has no tool/reason fields and every OTHER
+// zulip.* effect's payload is read by internal/zulip.Handlers.Notify via
+// that shared struct, so this one is unmarshaled with the extra fields
+// internal/zulip.Handlers.Notify's own mirrored copy also carries.
+type violationEffectPayload struct {
+	TaskID string `json:"task_id"`
+	RunID  string `json:"run_id,omitempty"`
+	Tool   string `json:"tool,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }

@@ -30,14 +30,26 @@ type Artifact struct {
 }
 
 type Budget struct {
-	ScopeKind      string         `json:"scope_kind"`
-	ScopeID        uuid.UUID      `json:"scope_id"`
-	UsdCap         pgtype.Numeric `json:"usd_cap"`
-	MinuteCap      int32          `json:"minute_cap"`
-	QuestionCap    int32          `json:"question_cap"`
-	UsdSpent       pgtype.Numeric `json:"usd_spent"`
-	MinutesSpent   int32          `json:"minutes_spent"`
-	QuestionsAsked int32          `json:"questions_asked"`
+	ScopeKind      string             `json:"scope_kind"`
+	ScopeID        uuid.UUID          `json:"scope_id"`
+	UsdCap         pgtype.Numeric     `json:"usd_cap"`
+	MinuteCap      int32              `json:"minute_cap"`
+	QuestionCap    int32              `json:"question_cap"`
+	UsdSpent       pgtype.Numeric     `json:"usd_spent"`
+	MinutesSpent   int32              `json:"minutes_spent"`
+	QuestionsAsked int32              `json:"questions_asked"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	BreachedAt     pgtype.Timestamptz `json:"breached_at"`
+}
+
+// Pause is the M4 kill switch (development-plan.md §4). scope is "global"
+// or "project:<uuid>" — see 0004_m4.up.sql's comment on why a plain text
+// key beats a (kind, id) pair here.
+type Pause struct {
+	Scope    string             `json:"scope"`
+	Actor    string             `json:"actor"`
+	Reason   *string            `json:"reason"`
+	PausedAt pgtype.Timestamptz `json:"paused_at"`
 }
 
 type Event struct {

@@ -91,12 +91,12 @@ func (d *daemon) handleMessage(ctx context.Context, ev zulipEvent) {
 	sender := strconv.FormatInt(ev.Message.SenderID, 10)
 
 	if m := answerEscapeHatch.FindStringSubmatch(content); m != nil {
-		d.resolveAndAnswer(ctx, sender, "", m[1], m[2])
+		d.resolveAndAnswer(ctx, sender, "", m[1], m[2], false)
 
 		return
 	}
 
-	d.resolveAndAnswer(ctx, sender, ev.Message.Subject, "", content)
+	d.resolveAndAnswer(ctx, sender, ev.Message.Subject, "", content, false)
 }
 
 // emojiAnswers maps a handful of common confirm/choice reactions to a plain-
@@ -129,7 +129,7 @@ func (d *daemon) handleReaction(ctx context.Context, ev zulipEvent) {
 		answer = mapped
 	}
 
-	d.resolveAndAnswer(ctx, strconv.FormatInt(ev.UserID, 10), topic, "", answer)
+	d.resolveAndAnswer(ctx, strconv.FormatInt(ev.UserID, 10), topic, "", answer, true)
 }
 
 // resolveAndAnswer is the shared tail of both the message and reaction
@@ -138,7 +138,13 @@ func (d *daemon) handleReaction(ctx context.Context, ev zulipEvent) {
 // one open question for topic), then answer it. A failure at any step is
 // logged, never surfaced to Zulip — there is no inbound HTTP request to
 // fail back to.
-func (d *daemon) resolveAndAnswer(ctx context.Context, senderZulipID, topic, explicitQuestionID, answerText string) {
+//
+// viaReaction gates the M4 approval fallback: only a thumbsup/thumbsdown
+// reaction (never a free-text message reply, which could coincidentally
+// say "yes"/"no" as an ordinary question answer) with no open question on
+// the topic falls through to "is this topic's task in REVIEW instead?" —
+// see resolveApproval below.
+func (d *daemon) resolveAndAnswer(ctx context.Context, senderZulipID, topic, explicitQuestionID, answerText string, viaReaction bool) {
 	if answerText == "" {
 		return
 	}
@@ -161,6 +167,12 @@ func (d *daemon) resolveAndAnswer(ctx context.Context, senderZulipID, topic, exp
 		q, err := d.controlPlane.GetOpenQuestionByTopic(ctx, topic)
 		if err != nil {
 			if _, ok := errors.AsType[errNotFound](err); ok {
+				if viaReaction && (answerText == "yes" || answerText == "no") {
+					d.resolveApproval(ctx, topic, answerText, id.DisplayName)
+
+					return
+				}
+
 				d.log.Info("bridge: no open question for topic, ignoring reply", "topic", topic)
 
 				return
@@ -176,5 +188,36 @@ func (d *daemon) resolveAndAnswer(ctx context.Context, senderZulipID, topic, exp
 
 	if err := d.controlPlane.AnswerQuestion(ctx, questionID, answerText, id.DisplayName); err != nil {
 		d.log.Error("bridge: answering question failed", "question_id", questionID, "error", err)
+	}
+}
+
+// resolveApproval is the M4 half of the Zulip review action (development-
+// plan.md §4): a thumbsup/thumbsdown on a topic with no open question,
+// where that topic's task IS in REVIEW, is a PR approval/rejection rather
+// than a question answer. "no open question for topic" and "no task in
+// REVIEW for topic" are both errNotFound from their respective lookups, so
+// this degrades to the same log-and-ignore as an ordinary stray reaction —
+// there is nothing here to approve.
+func (d *daemon) resolveApproval(ctx context.Context, topic, answerText, actor string) {
+	target, err := d.controlPlane.GetReviewByZulipTopic(ctx, topic)
+	if err != nil {
+		if _, ok := errors.AsType[errNotFound](err); ok {
+			d.log.Info("bridge: no open question or review for topic, ignoring reaction", "topic", topic)
+
+			return
+		}
+
+		d.log.Error("bridge: resolving review target failed", "topic", topic, "error", err)
+
+		return
+	}
+
+	decision := "APPROVED"
+	if answerText == "no" {
+		decision = "REJECTED"
+	}
+
+	if err := d.controlPlane.Approve(ctx, target, decision, actor); err != nil {
+		d.log.Error("bridge: recording approval failed", "task_id", target.TaskID, "error", err)
 	}
 }
