@@ -1,7 +1,7 @@
 COMPOSE := podman compose -f deploy/compose.yaml
 DATABASE_URL ?= postgres://agentfleet:agentfleet@localhost:5433/agentfleet?sslmode=disable
 
-.PHONY: up down logs build test check migrate-up migrate-down lint sqlc test-integration e2e runner-image
+.PHONY: up down logs build test check migrate-up migrate-down lint sqlc test-integration e2e runner-image egress-ca
 
 up:
 	$(COMPOSE) up -d --build
@@ -12,6 +12,19 @@ up:
 # image-not-found error rather than an implicit pull.
 runner-image:
 	podman build -f deploy/runner.Dockerfile -t agentfleet-runner .
+
+# One-time bootstrap (development-plan.md §8 step 8, before step 10's
+# runner-image build): mitmproxy generates its CA the first time it starts.
+# Run it briefly against deploy/egress-proxy/ca/ so BOTH the compose
+# egress-proxy service and the runner image's baked-in trust store (COPY'd
+# at build time — deploy/runner.Dockerfile) sign with the same, stable CA.
+# Never re-run this against a deployment with already-built runner images —
+# a regenerated CA breaks their trust store (docs/adr/0016).
+egress-ca:
+	mkdir -p deploy/egress-proxy/ca
+	podman run --rm -v $(CURDIR)/deploy/egress-proxy/ca:/home/mitmproxy/.mitmproxy:z \
+		docker.io/mitmproxy/mitmproxy:11.1.3 sh -c 'mitmdump --set confdir=/home/mitmproxy/.mitmproxy & sleep 3; kill %1'
+	test -f deploy/egress-proxy/ca/mitmproxy-ca-cert.pem
 
 down:
 	$(COMPOSE) down

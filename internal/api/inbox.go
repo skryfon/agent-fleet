@@ -2,11 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"agentfleet/internal/domain"
 )
@@ -15,14 +19,21 @@ import (
 // (runner/packages/af-control, P6) can receive. "cancel" is the only kind
 // M2 actually produces (POST /v1/tasks/{id}/cancel while RUNNING/
 // BLOCKED_ON_HUMAN enqueues run.kill and moves run.state toward
-// CANCELLED). "answer" carries the shape M3's af-ask-human round-trip will
-// populate — the envelope exists now so af-control's inbox client doesn't
-// need a schema change when the producing side lands; nothing in M2 ever
-// asks a question, so this kind is currently unreachable in practice.
+// CANCELLED). "answer" carries the shape M3's af-ask-human round-trip
+// declared, but a human's answer is actually delivered as an env var at
+// resume launch (AF_RESUME_ANSWER — internal/supervisor's daemon.spec()),
+// never through this poll, so that kind stays unreachable here too. M5
+// adds the two kinds that ARE delivered this way: "worker_question" (D7's
+// ask_orchestrator, for the orchestrator's own check_workers tool) and
+// "worker_report" (report_to_orchestrator) — both read off run_inbox.
 type inboxMessage struct {
 	Kind     string  `json:"kind"`
 	Question *string `json:"question_id,omitempty"`
 	Answer   *string `json:"answer,omitempty"`
+	// Payload carries run_inbox's own stored JSON verbatim for
+	// worker_question/worker_report — it already includes from_run_id, so
+	// this envelope doesn't duplicate that field at the top level.
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 const (
@@ -78,22 +89,34 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 }
 
 // pollInbox checks, once, whether there's a message worth delivering right
-// now: the run's own state having reached CANCELLED (§4's cancel
-// delivery). It never blocks; the caller's loop supplies the waiting.
+// now. It never blocks; the caller's loop supplies the waiting. Checked in
+// order:
 //
-// The "answer" kind inboxMessage declares has no producer yet:
-// ListOpenQuestionsByRun only ever returns state='OPEN' rows (M3's
-// af-ask-human, which would flip a question to ANSWERED via
-// POST /v1/questions/{id}/answer, is not implemented — that route is a
-// documented 501 in M2), so there is nothing for this function to poll for
-// today. The envelope type exists so af-control's inbox client doesn't need
-// a schema change when M3 lands; wiring the actual delivery is that
-// milestone's work, not a stub worth writing against a query that can never
-// answer it.
+//  1. The run's own state having reached CANCELLED (§4's cancel delivery)
+//     — checked first so a cancelled run is never handed more work instead
+//     of the cancellation it's waiting for.
+//  2. run_inbox (M5): a worker_question (D7's ask_orchestrator) or
+//     worker_report (report_to_orchestrator) waiting for this run —
+//     ClaimNextRunInbox atomically marks it delivered (FOR UPDATE SKIP
+//     LOCKED), so a redelivered long-poll request never claims the same
+//     row twice.
+//
+// The "answer" kind inboxMessage declares has no producer here: a human's
+// answer is delivered as an env var at resume launch (AF_RESUME_ANSWER —
+// internal/supervisor's daemon.spec()), never through this poll.
 func (s *Server) pollInbox(ctx context.Context, runID uuid.UUID) (inboxMessage, bool) {
 	run, err := s.Store.Q().GetRunByID(ctx, runID)
 	if err == nil && run.State == string(domain.RunCancelled) {
 		return inboxMessage{Kind: "cancel"}, true
+	}
+
+	item, err := s.Store.Q().ClaimNextRunInbox(ctx, pgtype.UUID{Bytes: runID, Valid: true})
+	if err == nil {
+		return inboxMessage{Kind: item.Kind, Payload: item.Payload}, true
+	}
+
+	if !errors.Is(err, pgx.ErrNoRows) {
+		s.Log.Error("api: claiming run_inbox failed", "run_id", runID, "error", err)
 	}
 
 	return inboxMessage{}, false

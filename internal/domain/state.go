@@ -72,8 +72,14 @@ const (
 	TrRunExitedErrRetryable Trigger = "run_exited_err_retryable" // requeues the task for another attempt
 	TrRunExitedErrFinal     Trigger = "run_exited_err_final"     // attempts exhausted; task fails
 	TrAsked                 Trigger = "asked"                    // af-ask-human raised a question (M3; envelope only in M2)
-	TrAnswered              Trigger = "answered"                 // a human answered (M3)
+	TrAnswered              Trigger = "answered"                 // a human answered (M3), or the orchestrator answered a worker (M5)
 	TrCancel                Trigger = "cancel"                   // POST /v1/tasks/{id}/cancel
 	TrPark                  Trigger = "park"                     // the M3 timeout ladder's terminal step
 	TrApproved              Trigger = "approved"                 // POST /v1/approvals (M4) approves the REVIEW artifact
+	// TrAskedOrchestrator is TrAsked's counterpart for D7's ask_orchestrator
+	// (M5): a worker blocking on its orchestrator, not a human. Kept as its
+	// own trigger rather than reusing TrAsked with a flag because TrAsked's
+	// row unconditionally schedules the zulip.question effect — an
+	// orchestrator-bound question must never reach Zulip.
+	TrAskedOrchestrator Trigger = "asked_orchestrator"
 )

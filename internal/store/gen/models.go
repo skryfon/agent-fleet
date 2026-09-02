@@ -30,14 +30,16 @@ type Artifact struct {
 }
 
 type Budget struct {
-	ScopeKind      string         `json:"scope_kind"`
-	ScopeID        uuid.UUID      `json:"scope_id"`
-	UsdCap         pgtype.Numeric `json:"usd_cap"`
-	MinuteCap      int32          `json:"minute_cap"`
-	QuestionCap    int32          `json:"question_cap"`
-	UsdSpent       pgtype.Numeric `json:"usd_spent"`
-	MinutesSpent   int32          `json:"minutes_spent"`
-	QuestionsAsked int32          `json:"questions_asked"`
+	ScopeKind      string             `json:"scope_kind"`
+	ScopeID        uuid.UUID          `json:"scope_id"`
+	UsdCap         pgtype.Numeric     `json:"usd_cap"`
+	MinuteCap      int32              `json:"minute_cap"`
+	QuestionCap    int32              `json:"question_cap"`
+	UsdSpent       pgtype.Numeric     `json:"usd_spent"`
+	MinutesSpent   int32              `json:"minutes_spent"`
+	QuestionsAsked int32              `json:"questions_asked"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	BreachedAt     pgtype.Timestamptz `json:"breached_at"`
 }
 
 type Event struct {
@@ -86,6 +88,13 @@ type Outbox struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type Pause struct {
+	Scope    string             `json:"scope"`
+	Actor    string             `json:"actor"`
+	Reason   *string            `json:"reason"`
+	PausedAt pgtype.Timestamptz `json:"paused_at"`
+}
+
 type Project struct {
 	ID           uuid.UUID          `json:"id"`
 	Slug         string             `json:"slug"`
@@ -113,6 +122,7 @@ type Question struct {
 	ZulipMessageID *string            `json:"zulip_message_id"`
 	NudgedAt       pgtype.Timestamptz `json:"nudged_at"`
 	EscalatedAt    pgtype.Timestamptz `json:"escalated_at"`
+	ToRunID        pgtype.UUID        `json:"to_run_id"`
 }
 
 type Run struct {
@@ -140,6 +150,15 @@ type Run struct {
 	ExitCode        *int32             `json:"exit_code"`
 }
 
+type RunInbox struct {
+	ID          int64              `json:"id"`
+	RunID       uuid.UUID          `json:"run_id"`
+	Kind        string             `json:"kind"`
+	Payload     []byte             `json:"payload"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	DeliveredAt pgtype.Timestamptz `json:"delivered_at"`
+}
+
 type Task struct {
 	ID                 uuid.UUID          `json:"id"`
 	FeatureID          uuid.UUID          `json:"feature_id"`
@@ -158,4 +177,7 @@ type Task struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 	NextEventSeq       int64              `json:"next_event_seq"`
 	Attempt            int32              `json:"attempt"`
+	ParentRunID        pgtype.UUID        `json:"parent_run_id"`
+	Depth              int32              `json:"depth"`
+	Role               *string            `json:"role"`
 }

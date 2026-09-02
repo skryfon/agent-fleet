@@ -65,3 +65,14 @@ SELECT * FROM event WHERE (at, id) > (sqlc.arg(since_at)::timestamptz, sqlc.arg(
 -- explicit. The column itself stays a plain uuid.UUID in the RETURNING/
 -- SELECT * results either way; this only affects the query's own argument.
 SELECT * FROM event WHERE task_id = sqlc.arg(task_id)::uuid ORDER BY at;
+
+-- name: CountDeviationEvents :one
+-- development-plan.md §11's drift-rate metric numerator: how many
+-- "report_deviation" tool calls (internal/api's reportDeviation handler,
+-- M5) have ever been recorded. The append-only event log is the source —
+-- no denormalised counter column, per that handler's own doc comment.
+SELECT count(*) FROM event WHERE kind = 'deviation';
+
+-- name: CountAllTasks :one
+-- §11's drift-rate metric denominator: "deviations reported per task."
+SELECT count(*) FROM task;

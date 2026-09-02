@@ -34,6 +34,10 @@ type effectPayload struct {
 // without a real Postgres.
 type Store interface {
 	Q() *db.Queries
+	// CheckPause gates RunLaunch on the M4 kill switch — see this method's
+	// own doc comment on internal/store.Store for why only "global" is
+	// actually checked.
+	CheckPause(ctx context.Context, scope string) error
 }
 
 // Handlers holds run.launch/run.kill's dependencies. Register both with an
@@ -89,6 +93,16 @@ func tokenHash(token string) []byte {
 // Create is itself idempotent by container name, so a daemon call that
 // already succeeded once is a cheap no-op on retry.
 func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
+	// Re-checked here, not just at POST /v1/tasks/{id}/start (internal/api's
+	// own startTask check): a run.launch row enqueued a moment before an
+	// admin hit the kill switch must not start a container just because it
+	// beat the pause into the queue. A plain (non-ErrPoison) error retries
+	// with backoff — this stays queued and launches once resumed, per
+	// development-plan.md §4's kill switch, rather than being dropped.
+	if err := h.Store.CheckPause(ctx, "global"); err != nil {
+		return fmt.Errorf("run.launch: %w", err)
+	}
+
 	var p effectPayload
 	if err := json.Unmarshal(m.Payload, &p); err != nil {
 		return fmt.Errorf("%w: run.launch: invalid payload: %v", outbox.ErrPoison, err)
@@ -100,6 +114,22 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 	}
 
 	q := h.Store.Q()
+
+	// M5: parent_run_id/role are a property of the TASK (set by
+	// Store.ApplySpawn when this task was itself spawned by spawn_worker),
+	// not something run.launch's own payload carries — every run.launch
+	// call for this task (a first launch, a retry, a resume) must derive
+	// them the same way, so they're read once here, before the run row
+	// itself exists, and threaded into both InsertRunWithID branches below.
+	launchCtx, err := q.GetLaunchContext(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("run.launch: loading launch context for task %s: %w", taskID, err)
+	}
+
+	role := h.DefaultRole
+	if launchCtx.Role != nil {
+		role = *launchCtx.Role
+	}
 
 	// Resume detection (M3): TrAnswered's own run.launch effect carries the
 	// JUST-EXITED run's id in RunID — see Store.ApplyAnswer's doc comment.
@@ -149,23 +179,19 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 		token := runToken(h.RunTokenSecret, runID)
 
 		run, err = q.InsertRunWithID(ctx, db.InsertRunWithIDParams{
-			ID:        runID,
-			TaskID:    taskID,
-			Role:      h.DefaultRole,
-			Model:     h.DefaultModel,
-			State:     "PENDING",
-			TokenHash: tokenHash(token),
+			ID:          runID,
+			TaskID:      taskID,
+			ParentRunID: launchCtx.ParentRunID,
+			Role:        role,
+			Model:       h.DefaultModel,
+			State:       "PENDING",
+			TokenHash:   tokenHash(token),
 		})
 		if err != nil {
 			return fmt.Errorf("run.launch: inserting run for task %s: %w", taskID, err)
 		}
 	case err != nil:
 		return fmt.Errorf("run.launch: loading active run for task %s: %w", taskID, err)
-	}
-
-	launchCtx, err := q.GetLaunchContext(ctx, taskID)
-	if err != nil {
-		return fmt.Errorf("run.launch: loading launch context for task %s: %w", taskID, err)
 	}
 
 	var acceptanceCriteria []string

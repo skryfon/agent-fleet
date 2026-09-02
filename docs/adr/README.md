@@ -20,6 +20,7 @@ One file per locked decision in `development-plan.md` §1, named
 | [0013](0013-control-plane-never-imports-a-dsh-type.md) | D13 — The control plane never imports a dsh type |
 | [0014](0014-agentfleet-code-lives-in-our-own-bundle.md) | D14 — Everything AgentFleet-specific lives in our own dsh bundle |
 | [0015](0015-reviewers-use-a-different-model-family.md) | D15 — Reviewer agents use a different model family from implementer agents |
+| [0016](0016-egress-proxy-terminates-tls.md) | M4 — The egress proxy terminates TLS to filter the merge endpoint by path |
 
 ## Template
 

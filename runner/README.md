@@ -12,28 +12,29 @@ before editing any `af-*` package.
 - `bundle/` — `dsh-bundle-agentfleet`, the patch that stacks the `af-*`
   plugins into a profile.
 
-## Status: M1 done
+## Status: M4.5 done
 
-Both M1 done-conditions are proven, live, in a real rootless container
-against a real GitHub repo (`sarathkumarps17/agentfleet-m1-scratch`, branch
-protection on `main`):
+M1's done-conditions (kill criterion + first PR, both proven live against
+`sarathkumarps17/agentfleet-m1-scratch`) still hold — see git history for the
+original writeup. Since then: M2 (`af-control` mirrors `session/event` to the
+control plane), M3 (`af-ask-human`/`af-resume`, checkpoint-and-exit), M4
+(`af-policy` four-layer merge prevention incl. the egress proxy, `af-budget`
+live with a real cap), and M4.5 (the dsh upgrade drill below) all landed.
+Every `af-*` package here is active in `bundle/cordis.patch.yml` except
+`af-context` (still a comment-only M2+ stub) and `af-subagent`/`af-webhook`
+(M5/M6).
 
-- **Kill criterion** — `af-policy` denies a real tool from a `tools/pre-execute`
-  listener, without patching any `dsh-base` config row by id. The profile's
-  own `cordis.patch.yml` stayed the untouched `[]` template throughout.
-- **First PR** — a real headless task created a branch, wrote a file,
-  committed, pushed, and opened
-  [PR #1](https://github.com/sarathkumarps17/agentfleet-m1-scratch/pull/1) via
-  `af-github`. Wall-clock: 22s. `af-github` has no merge tool (D3); a
-  follow-up run's `gh pr merge` attempt was denied by `af-policy`
-  (`bash command matched forbidden pattern: gh\s+pr\s+merge`), and a direct
-  `git push origin main` was independently rejected server-side by branch
-  protection (`GH006: Protected branch update failed`) — two of the four
-  merge-prevention layers (development-plan.md §M4), verified.
+### Upgrading dsh
 
-`af-control` and `af-context` remain comment-only stubs, `disabled: true` in
-`bundle/cordis.patch.yml` — they're M2. `af-ask-human`/`af-budget`/
-`af-subagent`/`af-webhook` are untouched M3+ stubs.
+See `docs/dsh-upgrade-drill.md` for the runbook and `docs/upgrade-drills/` for
+past runs. Two regression detectors exist specifically for this:
+`scripts/dump-config.sh` (composition drift — every `af-*` row present, no
+`PENDING` Cordis fiber, diffed against `testdata/dump-config.golden`) and
+`packages/af-budget/src/dsh-seam.test.ts` (a type-only check that af-budget's
+duck-typed `tokenMeter` seam still matches the real
+`@deepseek-ai/dsh-token-meter` contract — that package is deliberately not
+imported at runtime, see the file's own header, so `tsc` on af-budget's own
+project can't catch drift there without this).
 
 ### Commands
 
@@ -91,15 +92,15 @@ node ../deepseek-harness/apps/cli/lib/bin.js --profile agentfleet-runner "<task>
 `apps/cli/lib/bin.js` is dsh's own already-built artifact in the vendored
 checkout — no `pnpm run build` needed there.
 
-## What's next (M2)
+## What's next (M5)
 
-- `af-control`: mirror `session/event` to the control plane; long-poll the
-  run inbox.
-- `af-context`: resolve hash-pinned `spec_refs` on `agent/pre-step`.
-- The fake-LLM runner (dsh already ships `packages/test-support/llm-mock-server`)
-  for deterministic, zero-token integration tests of policy/orchestration.
-- A hand-launched `podman run` proved the container; M2 adds the supervisor
-  service that launches runs for real.
+- `af-subagent`: `spawn_worker` with depth/fan-out limits, `ask_orchestrator`
+  routing, subtree cancellation (development-plan.md §M5).
+- `af-context`: resolve hash-pinned `spec_refs` on `agent/pre-step` — still a
+  comment-only stub.
+- development-plan.md itself notes stop-after-M4.5 is a legitimate outcome;
+  M5 is additional orchestration on top of a system that already has real
+  safety rails.
 
-See `~/.claude/plans/objective-implement-the-m1-calm-swing.md` for the full
-plan and the OmniRoute wiring writeup.
+See `~/.claude/plans/objective-implement-the-m1-calm-swing.md` for the
+original M1 plan and the OmniRoute wiring writeup.

@@ -304,12 +304,41 @@ func (s *Server) listTasksByState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tasks)
 }
 
+// startTask is fail-closed on the M4 kill switch (development-plan.md §4):
+// a paused deployment must not accept new launches, even though an
+// already-running task keeps going until something actively kills it (the
+// `kill: true` sweep on POST /v1/admin/pause, or a human cancel).
 func (s *Server) startTask(w http.ResponseWriter, r *http.Request) {
+	if err := s.Store.CheckPause(r.Context(), "global"); err != nil {
+		writeError(w, http.StatusConflict, "deployment is paused")
+
+		return
+	}
+
 	s.applyTaskTrigger(w, r, domain.TrStart, "api:start")
 }
 
+// cancelTask cancels the whole subtree rooted at the task, not just the
+// task itself (development-plan.md §7 M5's done-when: "cancelling the
+// parent kills the subtree"). For a task with no spawned children this is
+// exactly the single-task cancel it always was — Store.CancelSubtree's own
+// recursive walk finds nothing else to visit.
 func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request) {
-	s.applyTaskTrigger(w, r, domain.TrCancel, "api:cancel")
+	taskID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid task id")
+
+		return
+	}
+
+	results, err := s.Store.CancelSubtree(r.Context(), s.Redact, taskID, "api:cancel")
+	if err != nil {
+		writeTransitionErr(w, s.Log, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, results)
 }
 
 // applyTaskTrigger is startTask/cancelTask's shared body: parse the path

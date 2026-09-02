@@ -68,6 +68,18 @@ jobs:
         working-directory: runner
       - run: npx vitest run
         working-directory: runner
+      # Catches dsh composition drift a rename/removal, or a patched
+      # dsh-bundle-headless row id going stale, that neither typecheck nor
+      # vitest can see (--dump-config composes the tree without booting
+      # fibers). See runner/scripts/dump-config.sh and the M4.5 upgrade
+      # drill (development-plan.md) for what this is and isn't a
+      # substitute for. If this ever fails here with a missing
+      # lib/index.js that runner/README.md's local instructions don't
+      # reproduce, the cached host build above needs `build:lib` (both
+      # faces), not `build:lib:host` alone — the same gap the README
+      # documents for full boot, just showing up here first.
+      - run: ./scripts/dump-config.sh --check
+        working-directory: runner
 
   migrations:
     runs-on: ubuntu-latest

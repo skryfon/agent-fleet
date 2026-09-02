@@ -2,8 +2,10 @@
 # to form the agentfleet-runner profile (development-plan.md §5, §7).
 #
 # M1: af-policy, af-github, and af-worktree are real plugins. M3: af-control,
-# af-ask-human, and af-resume join them — af-context remains a comment-only
-# stub, disabled, until M1/M2's context-hash work actually lands.
+# af-ask-human, and af-resume join them. M4: af-budget joins them. M5:
+# af-subagent joins them (spawn_worker/report_to_orchestrator/check_workers/
+# report_deviation) — af-context remains a comment-only stub, disabled, until
+# M1/M2's context-hash work actually lands.
 #
 # The kill criterion (development-plan.md M1: a deny from af-policy must not
 # require patching dsh-base) is proven — see runner/README.md.
@@ -67,11 +69,11 @@
 
     - id: af-budget
       name: '@agentfleet/af-budget'
-      disabled: true # enabled in M4
+      config:
+        usdPerMillionTokens: !!js process.env.AF_BUDGET_USD_PER_MILLION_TOKENS ? Number(process.env.AF_BUDGET_USD_PER_MILLION_TOKENS) : undefined
 
     - id: af-subagent
       name: '@agentfleet/af-subagent'
-      disabled: true # enabled in M5
 
     - id: af-webhook
       name: '@agentfleet/af-webhook'

@@ -4,6 +4,12 @@
 # Zulip compose secrets (deploy/zulip.compose.yaml)
 deploy/zulip/secrets/
 
+# M4 egress-proxy CA (`make egress-ca`) — the private key here can decrypt
+# every TLS connection a runner ever makes; never committed, same posture
+# as .env. Generate it once per deployment, out of band.
+deploy/egress-proxy/ca/*
+!deploy/egress-proxy/ca/.gitkeep
+
 # Go
 /bin/
 
@@ -15,3 +21,7 @@ lib/
 
 # OS
 .DS_Store
+
+# Python (deploy/egress-proxy/addon.py)
+__pycache__/
+*.pyc

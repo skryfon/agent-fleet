@@ -80,22 +80,29 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   let pending: AskHumanPending | undefined
 
-  async function ask(args: { question: string; kind: string; options?: string[]; addressee?: string }, signal: AbortSignal): Promise<string> {
+  // toolName is dispatched VERBATIM to POST /v1/runs/{id}/tools/{toolName} —
+  // this is what makes D7 (docs/adr/0007: "only the orchestrator gets
+  // ask_human") enforceable at all. Both callers below used to hardcode
+  // 'ask_human' here regardless of which tool actually invoked ask(), so a
+  // worker calling ask_orchestrator was evaluated by internal/policy as
+  // 'ask_human' and denied — a real bug caught while wiring M5's D7
+  // enforcement test, fixed by threading the real tool name through.
+  async function ask(toolName: 'ask_human' | 'ask_orchestrator', args: { question: string; kind: string; options?: string[]; addressee?: string }, signal: AbortSignal): Promise<string> {
     const client = ctx.get('afControl') as RunClient | undefined
     if (client === undefined) {
-      throw new Error('ask_human: af-control is not configured (RUN_ID/AF_RUN_TOKEN/CONTROL_PLANE_URL unset) — not running under a real AgentFleet run')
+      throw new Error(`${toolName}: af-control is not configured (RUN_ID/AF_RUN_TOKEN/CONTROL_PLANE_URL unset) — not running under a real AgentFleet run`)
     }
 
-    const dispatch = await client.dispatchTool('ask_human', {
+    const dispatch = await client.dispatchTool(toolName, {
       question: args.question, kind: args.kind, options: args.options, addressee: args.addressee,
     })
     if (!dispatch.allow) {
-      throw new Error(`ask_human: denied — ${dispatch.reason ?? dispatch.rule ?? 'no reason given'}`)
+      throw new Error(`${toolName}: denied — ${dispatch.reason ?? dispatch.rule ?? 'no reason given'}`)
     }
 
     const questionID = (dispatch.result as { question_id?: string } | undefined)?.question_id
     if (questionID === undefined) {
-      throw new Error('ask_human: control plane accepted the question but returned no question_id')
+      throw new Error(`${toolName}: control plane accepted the question but returned no question_id`)
     }
 
     const answer = await waitForAnswer(client, questionID, pollWaitSeconds, totalWaitMs, signal)
@@ -110,20 +117,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     description: 'Ask a human a question and unblock only once they answer. May pause the run for hours — use for genuine ambiguity, not busywork.',
     parameters: askHumanParams,
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-    async execute(args, exec) { return ask(args, exec.signal) },
+    async execute(args, exec) { return ask('ask_human', args, exec.signal) },
   }))
 
-  // ask_orchestrator (D7): same mechanics, addressed to the orchestrator
-  // role rather than a human directly. Inert until M5's orchestrator role
-  // and af-subagent routing exist — the manifest allow-list is what
-  // actually gates who can reach either tool (development-plan.md §5:
-  // "allow-list first").
+  // ask_orchestrator (D7, M5): same mechanics, dispatched under its own
+  // tool name (see ask()'s own doc comment above) so internal/policy
+  // evaluates a worker's manifest role against ask_orchestrator, never
+  // ask_human — the manifest allow-list is what actually gates who can
+  // reach either tool (development-plan.md §5: "allow-list first").
   ctx.tools.register(defineTool({
     name: 'ask_orchestrator',
     description: 'Ask the coordinating orchestrator a question (workers only — D7).',
     parameters: askHumanParams,
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-    async execute(args, exec) { return ask({ ...args, addressee: args.addressee ?? 'orchestrator' }, exec.signal) },
+    async execute(args, exec) { return ask('ask_orchestrator', args, exec.signal) },
   }))
 
   // The checkpoint-and-exit half: a turn that stopped because ask_human's

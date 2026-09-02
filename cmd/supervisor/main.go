@@ -127,6 +127,13 @@ type config struct {
 	maxConcurrentRuns int
 	ghToken           string
 	omniRouteAPIKey   string
+	// egressProxyURL, when set, is passed into every launched runner as
+	// HTTP_PROXY/HTTPS_PROXY (development-plan.md §8, M4 layer 4). Empty is
+	// a valid, if unsafe, configuration — a deployment that hasn't run
+	// `make egress-ca`/wired up deploy/egress-proxy yet still boots, just
+	// without that layer; the other three merge-prevention layers don't
+	// depend on it.
+	egressProxyURL string
 }
 
 func loadConfig() (config, error) {
@@ -139,6 +146,7 @@ func loadConfig() (config, error) {
 		runnerNetwork:   getenvDefault("RUNNER_NETWORK", "agentfleet_runners"),
 		ghToken:         os.Getenv("GH_TOKEN"),
 		omniRouteAPIKey: os.Getenv("OMNI_ROUTE_API_KEY"),
+		egressProxyURL:  os.Getenv("EGRESS_PROXY_URL"),
 	}
 
 	for name, v := range map[string]string{

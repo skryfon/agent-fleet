@@ -33,10 +33,32 @@ type Querier interface {
 	// A run that's cancelled or killed shouldn't leave a dangling OPEN question
 	// blocking its feature's one-open-per-topic slot forever.
 	CancelQuestionsForRun(ctx context.Context, runID uuid.UUID) ([]Question, error)
+	// Claims (marks delivered_at) and returns the oldest still-pending row for
+	// run_id, or no rows if the inbox is empty. FOR UPDATE SKIP LOCKED so two
+	// concurrent long-poll requests for the same run (a redelivered HTTP retry)
+	// never claim, and therefore never deliver, the same row twice.
+	ClaimNextRunInbox(ctx context.Context, dollar_1 pgtype.UUID) (RunInbox, error)
 	// SKIP LOCKED + the available_at lease bump means a second relay process
 	// (or a restart racing the old one's in-flight work) never double-claims a
 	// row — internal/outbox.Relay (P3) is the only caller.
 	ClaimOutboxBatch(ctx context.Context, limit int64) ([]Outbox, error)
+	// The direct fan-out width internal/fanout.Check's MaxChildrenPerRun caps —
+	// how many still-active tasks the given run has already spawned.
+	CountActiveChildTasksForRun(ctx context.Context, parentRunID pgtype.UUID) (int64, error)
+	// The aggregate width internal/fanout.Check's MaxActiveSubtree caps: every
+	// still-active task anywhere under rootTaskID's own lineage (itself
+	// included), walked transitively through parent_run_id -> run.task_id.
+	// Mirrors ListActiveSubtreeTaskIDs below; kept as a separate :one query
+	// (COUNT, not the row set) since spawn_worker's hot path only needs the
+	// number, not the ids.
+	CountActiveSubtreeTasks(ctx context.Context, rootTaskID uuid.UUID) (int64, error)
+	// §11's drift-rate metric denominator: "deviations reported per task."
+	CountAllTasks(ctx context.Context) (int64, error)
+	// development-plan.md §11's drift-rate metric numerator: how many
+	// "report_deviation" tool calls (internal/api's reportDeviation handler,
+	// M5) have ever been recorded. The append-only event log is the source —
+	// no denormalised counter column, per that handler's own doc comment.
+	CountDeviationEvents(ctx context.Context) (int64, error)
 	CountPoisonedOutbox(ctx context.Context) (int64, error)
 	CountStalledOutbox(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error)
 	CreateFeature(ctx context.Context, arg CreateFeatureParams) (Feature, error)
@@ -46,7 +68,16 @@ type Querier interface {
 	// enforces against — a second ask_human call for a feature with an already-
 	// OPEN question fails this INSERT with a unique_violation, which
 	// internal/store.ApplyAsk turns into ErrQuestionAlreadyOpen.
+	//
+	// to_run_id (0005_m5.up.sql) is NULL for a human-facing ask_human — it is
+	// only set for D7's ask_orchestrator, naming the orchestrator run the
+	// question is routed to instead of Zulip; question_one_open_per_feature_uk
+	// is scoped WHERE to_run_id IS NULL so worker->orchestrator questions never
+	// contend with each other or with the feature's own human-facing slot
+	// (question_one_open_per_run_uk is what caps THOSE, one per asking run).
 	CreateQuestion(ctx context.Context, arg CreateQuestionParams) (Question, error)
+	// DELETE /v1/admin/pause?scope=... (resume).
+	DeletePause(ctx context.Context, scope string) error
 	// key renders from domain.EffectSpec.RenderKey — a transition retried after
 	// a crash re-derives the identical key, so this INSERT is a no-op on retry.
 	// The ON CONFLICT target MUST repeat the partial index's WHERE clause
@@ -55,6 +86,12 @@ type Querier interface {
 	// the ON CONFLICT specification" — verified live against
 	// 0002_control_plane.up.sql while writing that migration.
 	EnqueueOutbox(ctx context.Context, arg EnqueueOutboxParams) (Outbox, error)
+	// Durable queue entry for a worker_question/worker_report handed to a
+	// specific run (M5, development-plan.md §5 ask_orchestrator/
+	// report_to_orchestrator) — GET /v1/runs/{id}/inbox's long-poll claims
+	// these via ClaimNextRunInbox below, in addition to its existing run.state
+	// derived "cancel" delivery.
+	EnqueueRunInbox(ctx context.Context, arg EnqueueRunInboxParams) (RunInbox, error)
 	// Poison: attempts exhausted (internal/outbox.Relay's MaxAttempts). Never
 	// auto-retried past this point — internal/reconcile (P8) surfaces it, a
 	// human decides.
@@ -62,6 +99,9 @@ type Querier interface {
 	// run_active_per_task_uk (0002_control_plane.up.sql) guarantees at most one
 	// row matches.
 	GetActiveRunForTask(ctx context.Context, taskID uuid.UUID) (Run, error)
+	// POST /v1/approvals looks a PR up by its url (subject_ref) to fetch the
+	// sha256 an approval must match.
+	GetArtifactByURI(ctx context.Context, uri string) (Artifact, error)
 	GetFeatureByID(ctx context.Context, id uuid.UUID) (Feature, error)
 	GetFeatureByProjectSlug(ctx context.Context, arg GetFeatureByProjectSlugParams) (Feature, error)
 	// cmd/bridge's inbound path (M3): resolve a Zulip topic reply back to the
@@ -71,11 +111,18 @@ type Querier interface {
 	GetFeatureByZulipTopic(ctx context.Context, zulipTopic *string) (Feature, error)
 	GetIdentityByGithubLogin(ctx context.Context, githubLogin *string) (Identity, error)
 	GetIdentityByZulipUserID(ctx context.Context, zulipUserID *string) (Identity, error)
+	// cmd/bridge's review-by-zulip-topic lookup (M4): a task in REVIEW has
+	// exactly one PR artifact in the ordinary case, but this takes the latest
+	// if af-github's gh_pr_create ever runs twice for the same task.
+	GetLatestArtifactByTask(ctx context.Context, taskID uuid.UUID) (Artifact, error)
 	// internal/supervisor's run.launch handler (P5) needs exactly this to build
-	// a launch request: the task content for TASK, and the project's repo for
+	// a launch request: the task content for TASK, the project's repo for
 	// REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
-	// exactly one repo before M6's multi-repo manifest work.
+	// exactly one repo before M6's multi-repo manifest work — and (M5)
+	// t.parent_run_id/t.role, so a spawned child's run row carries its own
+	// parent_run_id (CancelSubtree's walk key) and role without a second query.
 	GetLaunchContext(ctx context.Context, id uuid.UUID) (GetLaunchContextRow, error)
+	GetPause(ctx context.Context, scope string) (Pause, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (Project, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error)
@@ -90,6 +137,7 @@ type Querier interface {
 	// step of internal/store.ApplyTaskTransition (P3), so concurrent triggers
 	// against the same task serialize instead of racing.
 	GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, error)
+	IncrementBudgetSpent(ctx context.Context, arg IncrementBudgetSpentParams) (Budget, error)
 	IncrementRunAttempt(ctx context.Context, id uuid.UUID) (Run, error)
 	// Bumps next_event_seq (under the row lock the caller already holds via
 	// GetRunForUpdate) without touching run.state — internal/store.RecordEvent
@@ -105,6 +153,21 @@ type Querier interface {
 	// internal/store.ApplyRunExit calls this under the same GetTaskForUpdate
 	// lock as its own UpdateTaskState call, in the same transaction.
 	IncrementTaskAttempt(ctx context.Context, id uuid.UUID) (Task, error)
+	// POST /v1/approvals (development-plan.md §4/§3). No update path — every
+	// decision is its own row, per the same append-mostly instinct the `event`
+	// table follows (a re-decision is a new approval, not a mutated one).
+	InsertApproval(ctx context.Context, arg InsertApprovalParams) (Approval, error)
+	// M4: internal/api's pr_opened mediated-tool handler inserts one of these
+	// per PR the implementer opens — its sha256 (a diff hash, not the PR body)
+	// is what POST /v1/approvals binds an approval to (development-plan.md §3:
+	// "approval.subject_sha256 is mandatory ... a revised artifact voids its
+	// approval").
+	InsertArtifact(ctx context.Context, arg InsertArtifactParams) (Artifact, error)
+	// M5's spawn_worker (internal/store.ApplySpawn): a child task in the SAME
+	// feature as its spawning run's own task, one hop deeper. lane is always
+	// 'direct' — a spawned worker never goes through the Spec Kit ingestion
+	// lane (D5/D6 govern planning, not fan-out).
+	InsertChildTask(ctx context.Context, arg InsertChildTaskParams) (Task, error)
 	// The only place source='control_plane' events are written — always inside
 	// the same transaction as the state UPDATE and outbox INSERTs it accompanies
 	// (internal/store.ApplyTaskTransition, P3). seq comes from the caller, which
@@ -129,6 +192,16 @@ type Querier interface {
 	// The reconciler's (P8) and the supervisor's own startup reap's view of
 	// "what should currently have a live container."
 	ListActiveRuns(ctx context.Context) ([]Run, error)
+	// internal/store.CancelSubtree's own view of "everything under this task":
+	// the task itself, plus every task spawned (transitively, via
+	// parent_run_id -> run.task_id) by any run of it — excluding tasks already
+	// in a terminal state, so cancelling a subtree never attempts an illegal
+	// transition out of DONE/FAILED/CANCELLED/PARKED.
+	ListActiveSubtreeTaskIDs(ctx context.Context, rootTaskID uuid.UUID) ([]uuid.UUID, error)
+	// The M5 feature-scope budget breach reaction (internal/api/usage.go): every
+	// active task in the feature, each cancelled as its own subtree root so a
+	// runaway worker's siblings stop burning the feature's remaining budget too.
+	ListActiveTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error)
 	// event.task_id is nullable (an event can be scoped to a run only); the
 	// explicit ::uuid cast is what makes sqlc emit uuid.UUID here instead of
 	// pgtype.UUID for the PARAMETER — verified live, sqlc's inference defaults
@@ -161,6 +234,7 @@ type Querier interface {
 	ListProjects(ctx context.Context) ([]Project, error)
 	ListTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error)
 	ListTasksByState(ctx context.Context, state string) ([]Task, error)
+	MarkBudgetBreached(ctx context.Context, arg MarkBudgetBreachedParams) error
 	MarkOutboxPublished(ctx context.Context, id int64) error
 	MarkQuestionEscalated(ctx context.Context, id uuid.UUID) (Question, error)
 	MarkQuestionNudged(ctx context.Context, id uuid.UUID) (Question, error)
@@ -168,6 +242,11 @@ type Querier interface {
 	// guessed client-side (runner/packages/af-control's own comment on the same
 	// rule).
 	MirrorHighWaterSeq(ctx context.Context, runID uuid.UUID) (int64, error)
+	// M4's usage handler (POST /v1/runs/{id}/usage, internal/api/usage.go):
+	// tokens/cost accumulate on the run row itself, so the budget check always
+	// sees the run's own running total, not just the latest delta a client
+	// reported.
+	RecordRunUsage(ctx context.Context, arg RecordRunUsageParams) (Run, error)
 	RescheduleOutbox(ctx context.Context, arg RescheduleOutboxParams) error
 	SetFeatureTasksMdSHA256(ctx context.Context, arg SetFeatureTasksMdSHA256Params) error
 	// internal/zulip.Handlers.Notify calls this after a successful post, making
@@ -195,6 +274,18 @@ type Querier interface {
 	// comes from the caller wrapping this in the same transaction as the
 	// event/outbox inserts (internal/store.WithTx), not from this UPDATE alone.
 	UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams) (Task, error)
+	// Seeds a scope's caps on first use (internal/api's usage handler calls
+	// this before every IncrementBudgetSpent) — the manifest compiler that will
+	// own real per-project caps doesn't exist until M6, so cmd/control-plane's
+	// process-wide default Caps is what flows in here today, same documented
+	// stand-in as internal/api.Server.Manifest. ON CONFLICT DO UPDATE with a
+	// self-assignment (not DO NOTHING) is the standard sqlc/Postgres trick to
+	// still get a RETURNING row on the conflict path.
+	UpsertBudgetCaps(ctx context.Context, arg UpsertBudgetCapsParams) (Budget, error)
+	// POST /v1/admin/pause. ON CONFLICT re-stamps actor/reason/paused_at rather
+	// than erroring — re-pausing an already-paused scope (e.g. a second admin
+	// hitting the kill switch) is idempotent, not a 409.
+	UpsertPause(ctx context.Context, arg UpsertPauseParams) (Pause, error)
 	// Re-ingesting tasks.md updates an existing task's content in place, keyed
 	// by (feature_id, external_ref) — task_feature_external_ref_uk from
 	// 0002_control_plane.up.sql. Callers must have already rejected (409) any

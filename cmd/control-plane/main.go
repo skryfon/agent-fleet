@@ -21,6 +21,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"agentfleet/internal/api"
+	"agentfleet/internal/budget"
+	"agentfleet/internal/fanout"
 	"agentfleet/internal/outbox"
 	"agentfleet/internal/policy"
 	"agentfleet/internal/questions"
@@ -119,10 +121,30 @@ func run(log *slog.Logger) error {
 		// policy.
 		Manifest: policy.Manifest{
 			Roles: map[string]policy.Role{
-				"orchestrator": {MediatedTools: []string{"ask_human"}},
-				"implementer":  {MediatedTools: []string{"ask_human"}},
+				// M5: orchestrator gains spawn_worker (fan-out) and
+				// answer_worker (D7's ask_orchestrator round trip). Still
+				// keeps ask_human — it's the only role that does (D7).
+				"orchestrator": {MediatedTools: []string{"ask_human", "spawn_worker", "answer_worker", "gh_pr_create", "pr_opened", "report_deviation"}},
+				// gh_pr_create/pr_opened (M4): the mediated PR-creation round
+				// trip af-github's gh_pr_create now makes (runner/packages/
+				// af-github) — see internal/policy's package doc for why
+				// even an allow-listed tool still passes through here.
+				// M5: ask_orchestrator/report_to_orchestrator replace
+				// ask_human here — D7 says a worker never reaches Zulip
+				// directly; see docs/adr/0007's "dormant until M5" note,
+				// which this manifest is what actually makes true.
+				"implementer": {MediatedTools: []string{"ask_orchestrator", "report_to_orchestrator", "gh_pr_create", "pr_opened", "report_deviation"}},
 			},
 		},
+		// M4 hard-kill caps (development-plan.md §5's manifest example: "budget:
+		// { usd: 8, minutes: 45, questions: 3 }"). Process-wide until M6's
+		// manifest compiler owns per-project caps — same documented stand-in
+		// as Manifest above.
+		BudgetCaps: budget.Caps{USD: 8, Minutes: 45, Questions: 3},
+		// M5 fan-out caps (development-plan.md §7 M5: "spawn_worker with
+		// depth and fan-out limits"). Process-wide until M6's manifest
+		// compiler, same documented stand-in as Manifest/BudgetCaps above.
+		FanoutCaps: fanout.Caps{MaxDepth: 3, MaxChildrenPerRun: 4, MaxActiveSubtree: 12},
 	}
 
 	httpServer := &http.Server{
@@ -167,6 +189,7 @@ func run(log *slog.Logger) error {
 	relay.Handle("zulip.question", zulipHandlers.Notify)
 	relay.Handle("zulip.review", zulipHandlers.Notify)
 	relay.Handle("zulip.failed", zulipHandlers.Notify)
+	relay.Handle("zulip.violation", zulipHandlers.Notify)
 
 	sweeper := &questions.Sweeper{
 		Store: st, Redact: redactor, Zulip: zulipHandlers.Client, Log: log, Config: questions.DefaultConfig(),

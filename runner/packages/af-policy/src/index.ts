@@ -12,6 +12,13 @@ import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 export const name = 'af-policy'
 export const inject = ['tools']
 
+// ponytail: duplicated (not imported) from af-control's own RunClient, same
+// reasoning as af-ask-human's own copy of this type — see that package's
+// head comment. Only the one method this plugin needs.
+interface RunClient {
+  reportViolation(tool: string, reason: string): Promise<void>
+}
+
 export interface Config {
   /** Tool names denied outright (e.g. a merge tool, if one is ever registered). */
   deny: string[]
@@ -62,6 +69,15 @@ export function apply(ctx: Context, config: Partial<Config> = {}): void {
     const reason = violation(exec, resolved)
     if (reason === undefined) return next() // not our call to make — delegate
     ctx.logger.warn(`policy_violation tool=${exec.name} reason=${reason}`)
+
+    // Fire-and-forget: this deny already happened (the tool is being
+    // blocked either way) — a report that fails to reach the control plane
+    // must not turn a correctly-enforced deny into a hung tool call.
+    const client = ctx.get('afControl') as RunClient | undefined
+    void client?.reportViolation(exec.name, reason).catch((error: unknown) => {
+      ctx.logger.warn(`af-policy: reporting violation failed: ${String(error)}`)
+    })
+
     return { kind: 'deny', reason }
   })
 
