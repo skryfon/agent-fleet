@@ -95,6 +95,13 @@ func run(log *slog.Logger) error {
 
 	redactor := redact.FromEnv(os.LookupEnv,
 		"DATABASE_URL", "GH_TOKEN", "OMNI_ROUTE_API_KEY", "ADMIN_TOKEN", "SUPERVISOR_SECRET", "BRIDGE_SECRET",
+	).WithLiterals(
+		// M6 per-project credentials (development-plan.md §7 M6): every
+		// GH_TOKEN_<SLUG> this process's own environment carries (deploy/
+		// compose.yaml passes the same set to both control-plane and
+		// supervisor) — their names aren't known ahead of time the way the
+		// fixed list above is, so FromEnv can't see them.
+		redact.EnvValuesWithPrefix(os.Environ(), "GH_TOKEN_")...,
 	)
 
 	addr := os.Getenv("CONTROL_PLANE_ADDR")

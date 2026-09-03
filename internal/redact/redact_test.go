@@ -133,6 +133,32 @@ func TestFromEnvSkipsUnset(t *testing.T) {
 	}
 }
 
+// TestEnvValuesWithPrefixRedactsPerProjectTokens is M6's own canary
+// (development-plan.md §7 M6 per-project credentials): a GH_TOKEN_<SLUG>
+// whose name FromEnv's fixed list never sees must still be redacted once
+// swept via EnvValuesWithPrefix + WithLiterals, exactly the construction
+// cmd/control-plane/main.go uses. The value is deliberately NOT
+// ghp_-shaped, so a pass here proves the LITERAL mechanism caught it, not
+// the builtin gh[ps]_ pattern.
+func TestEnvValuesWithPrefixRedactsPerProjectTokens(t *testing.T) {
+	environ := []string{
+		"GH_TOKEN_PROJ_A=some-opaque-per-project-token-value",
+		"UNRELATED=fine-to-leave",
+	}
+
+	r := redact.FromEnv(func(string) (string, bool) { return "", false }).
+		WithLiterals(redact.EnvValuesWithPrefix(environ, "GH_TOKEN_")...)
+
+	got := r.String("token: some-opaque-per-project-token-value end")
+	if strings.Contains(got, "some-opaque-per-project-token-value") {
+		t.Fatalf("per-project GH_TOKEN_* value survived redaction: %q", got)
+	}
+
+	if !strings.Contains(r.String("keep: fine-to-leave"), "fine-to-leave") {
+		t.Fatal("EnvValuesWithPrefix redacted an unrelated env var's value")
+	}
+}
+
 func TestJSONInvalidReturnsError(t *testing.T) {
 	r := redact.New(nil, nil)
 	if _, err := r.JSON([]byte("not json")); err == nil {

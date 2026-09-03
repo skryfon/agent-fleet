@@ -1,0 +1,15 @@
+# Fixture --patch overlay for runner/scripts/dump-config.sh's second golden
+# (dump-config-manifest.golden) — the exact shape
+# internal/domain/manifest.Manifest.Patch produces for the "implementer"
+# role of internal/domain/manifest/testdata/valid.yaml (see that package's
+# own testdata/compiled.golden). Kept as a static fixture here rather than
+# generated at test time so this script has no Go build dependency.
+- id: af-policy
+  config:
+    deny:
+        - merge
+        - gh_pr_merge
+- id: af-subagent
+  config:
+    spawnedRoles:
+        - reviewer

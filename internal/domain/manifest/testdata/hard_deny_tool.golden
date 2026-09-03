@@ -1,0 +1,1 @@
+tool "gh_pr_merge" is never permitted for any role (docs/adr/0003) — remove it from the manifest

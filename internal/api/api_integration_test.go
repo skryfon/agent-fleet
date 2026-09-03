@@ -317,7 +317,7 @@ func newTestRun(t *testing.T, st *store.Store) (uuid.UUID, string) {
 	suffix := uuid.NewString()
 
 	proj, err := st.Q().CreateProject(ctx, db.CreateProjectParams{
-		Slug: "run-fixture-" + suffix, ManifestRef: "r", ManifestHash: "h", Repos: []string{}, Status: "ACTIVE",
+		Slug: "run-fixture-" + suffix, ManifestRef: "r", ManifestHash: "h", Repos: []string{}, Status: "ACTIVE", Manifest: []byte(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -361,7 +361,7 @@ func newTestRunningRun(t *testing.T, st *store.Store, role string) (uuid.UUID, s
 	suffix := uuid.NewString()
 
 	proj, err := st.Q().CreateProject(ctx, db.CreateProjectParams{
-		Slug: "run-fixture-" + suffix, ManifestRef: "r", ManifestHash: "h", Repos: []string{}, Status: "ACTIVE",
+		Slug: "run-fixture-" + suffix, ManifestRef: "r", ManifestHash: "h", Repos: []string{}, Status: "ACTIVE", Manifest: []byte(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)

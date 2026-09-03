@@ -12,9 +12,9 @@ import (
 )
 
 const createProject = `-- name: CreateProject :one
-INSERT INTO project (slug, manifest_ref, manifest_hash, repos, status)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, slug, manifest_ref, manifest_hash, repos, status, created_at
+INSERT INTO project (slug, manifest_ref, manifest_hash, repos, status, manifest)
+VALUES ($1, $2, $3, $4, $5, COALESCE($6::jsonb, '{}'::jsonb))
+RETURNING id, slug, manifest_ref, manifest_hash, repos, status, created_at, manifest
 `
 
 type CreateProjectParams struct {
@@ -23,8 +23,17 @@ type CreateProjectParams struct {
 	ManifestHash string   `json:"manifest_hash"`
 	Repos        []string `json:"repos"`
 	Status       string   `json:"status"`
+	Manifest     []byte   `json:"manifest"`
 }
 
+// COALESCE(..., '{}'), not a bare bind: a caller that leaves
+// CreateProjectParams.Manifest at its zero value (nil []byte, which pgx
+// sends as SQL NULL for jsonb) gets the same '{}' no-manifest default
+// 0006_m6.up.sql's column DEFAULT would give an omitted column — every
+// fixture/test written before M6 keeps working unchanged. internal/api's
+// createProject always passes an already-parsed, already-hashed manifest
+// once M6's manifest.Parse validates the request body, which simply wins
+// over the fallback.
 func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error) {
 	row := q.db.QueryRow(ctx, createProject,
 		arg.Slug,
@@ -32,6 +41,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		arg.ManifestHash,
 		arg.Repos,
 		arg.Status,
+		arg.Manifest,
 	)
 	var i Project
 	err := row.Scan(
@@ -42,12 +52,34 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.Repos,
 		&i.Status,
 		&i.CreatedAt,
+		&i.Manifest,
 	)
 	return i, err
 }
 
+const getManifestForRun = `-- name: GetManifestForRun :one
+SELECT p.manifest
+FROM run r
+JOIN task t ON t.id = r.task_id
+JOIN feature f ON f.id = t.feature_id
+JOIN project p ON p.id = f.project_id
+WHERE r.id = $1
+`
+
+// internal/api's resolveManifest (M6): project_id lives only on feature
+// today (0001_init.up.sql) — this walk is the same run -> task -> feature
+// -> project join internal/store/queries/run.sql's GetLaunchContext
+// already does; project_id is deliberately NOT denormalized onto run/task,
+// nothing else needs it and this join is indexed on every FK it crosses.
+func (q *Queries) GetManifestForRun(ctx context.Context, id uuid.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getManifestForRun, id)
+	var manifest []byte
+	err := row.Scan(&manifest)
+	return manifest, err
+}
+
 const getProjectByID = `-- name: GetProjectByID :one
-SELECT id, slug, manifest_ref, manifest_hash, repos, status, created_at FROM project WHERE id = $1
+SELECT id, slug, manifest_ref, manifest_hash, repos, status, created_at, manifest FROM project WHERE id = $1
 `
 
 func (q *Queries) GetProjectByID(ctx context.Context, id uuid.UUID) (Project, error) {
@@ -61,12 +93,13 @@ func (q *Queries) GetProjectByID(ctx context.Context, id uuid.UUID) (Project, er
 		&i.Repos,
 		&i.Status,
 		&i.CreatedAt,
+		&i.Manifest,
 	)
 	return i, err
 }
 
 const getProjectBySlug = `-- name: GetProjectBySlug :one
-SELECT id, slug, manifest_ref, manifest_hash, repos, status, created_at FROM project WHERE slug = $1
+SELECT id, slug, manifest_ref, manifest_hash, repos, status, created_at, manifest FROM project WHERE slug = $1
 `
 
 func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (Project, error) {
@@ -80,12 +113,13 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (Project, e
 		&i.Repos,
 		&i.Status,
 		&i.CreatedAt,
+		&i.Manifest,
 	)
 	return i, err
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT id, slug, manifest_ref, manifest_hash, repos, status, created_at FROM project ORDER BY created_at DESC
+SELECT id, slug, manifest_ref, manifest_hash, repos, status, created_at, manifest FROM project ORDER BY created_at DESC
 `
 
 func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
@@ -105,6 +139,7 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 			&i.Repos,
 			&i.Status,
 			&i.CreatedAt,
+			&i.Manifest,
 		); err != nil {
 			return nil, err
 		}
@@ -114,4 +149,42 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateProjectManifest = `-- name: UpdateProjectManifest :one
+UPDATE project
+SET manifest = $2, manifest_ref = $3, manifest_hash = $4
+WHERE slug = $1
+RETURNING id, slug, manifest_ref, manifest_hash, repos, status, created_at, manifest
+`
+
+type UpdateProjectManifestParams struct {
+	Slug         string `json:"slug"`
+	Manifest     []byte `json:"manifest"`
+	ManifestRef  string `json:"manifest_ref"`
+	ManifestHash string `json:"manifest_hash"`
+}
+
+// PUT /v1/projects/{slug}/manifest (M6): a manifest revision is not a
+// DELETE + re-register. manifest_ref/manifest_hash move together with the
+// new manifest — never let manifest_hash drift from what's actually stored.
+func (q *Queries) UpdateProjectManifest(ctx context.Context, arg UpdateProjectManifestParams) (Project, error) {
+	row := q.db.QueryRow(ctx, updateProjectManifest,
+		arg.Slug,
+		arg.Manifest,
+		arg.ManifestRef,
+		arg.ManifestHash,
+	)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.ManifestRef,
+		&i.ManifestHash,
+		&i.Repos,
+		&i.Status,
+		&i.CreatedAt,
+		&i.Manifest,
+	)
+	return i, err
 }

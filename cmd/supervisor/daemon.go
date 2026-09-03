@@ -37,6 +37,30 @@ func containerName(runID string) string {
 	return "agentfleet-run-" + runID
 }
 
+// envKeyForSlug turns a project slug into its GH_TOKEN_<SLUG> env var name
+// (M6 per-project credentials, development-plan.md §7 M6) — uppercased,
+// every non [A-Z0-9] byte replaced with '_', so "proj-a.b" and "proj_a_b"
+// don't collide by accident but every legal slug maps to a legal env var
+// name.
+func envKeyForSlug(slug string) string {
+	b := make([]byte, len(slug))
+
+	for i := 0; i < len(slug); i++ {
+		c := slug[i]
+
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - ('a' - 'A')
+		case c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			b[i] = c
+		default:
+			b[i] = '_'
+		}
+	}
+
+	return "GH_TOKEN_" + string(b)
+}
+
 func (d *daemon) routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -95,6 +119,8 @@ type launchRequest struct {
 	Role            string `json:"role"`
 	ResumeSessionID string `json:"resume_session_id,omitempty"`
 	Answer          string `json:"answer,omitempty"`
+	ProjectSlug     string `json:"project_slug,omitempty"`
+	Patch           string `json:"patch,omitempty"`
 }
 
 func (d *daemon) launch(w http.ResponseWriter, r *http.Request) {
@@ -209,12 +235,29 @@ func (d *daemon) kill(w http.ResponseWriter, r *http.Request) {
 // disk — those live under this one volume, and deploy/runner-entrypoint.sh's
 // own resume branch is what decides whether to initialize or reuse them.
 func (d *daemon) spec(req launchRequest) podman.Spec {
+	// M6 per-project credential isolation (development-plan.md §7 M6): a
+	// project whose GH_TOKEN_<SLUG> is set in this daemon's own environment
+	// (see loadConfig's projectGHTokens) gets its own token instead of the
+	// shared fallback. Logged by VARIABLE NAME only — never the value, same
+	// discipline internal/redact enforces on emitted events.
+	ghTokenVar := "GH_TOKEN"
+	ghToken := d.cfg.ghToken
+
+	if req.ProjectSlug != "" {
+		if key := envKeyForSlug(req.ProjectSlug); d.cfg.projectGHTokens[key] != "" {
+			ghTokenVar = key
+			ghToken = d.cfg.projectGHTokens[key]
+		}
+	}
+
+	d.log.Info("supervisor: resolved runner GH token", "run_id", req.RunID, "project_slug", req.ProjectSlug, "env_var", ghTokenVar)
+
 	env := map[string]string{
 		"RUN_ID":             req.RunID,
 		"TASK_ID":            req.TaskID,
 		"TASK":               req.Task,
 		"REPO_URL":           req.RepoURL,
-		"GH_TOKEN":           d.cfg.ghToken,
+		"GH_TOKEN":           ghToken,
 		"OMNI_ROUTE_API_KEY": d.cfg.omniRouteAPIKey,
 		"CONTROL_PLANE_URL":  d.cfg.controlPlaneURL,
 		"AF_RUN_TOKEN":       req.Token,
@@ -223,6 +266,14 @@ func (d *daemon) spec(req launchRequest) podman.Spec {
 	if req.ResumeSessionID != "" {
 		env["AF_RESUME_SESSION_ID"] = req.ResumeSessionID
 		env["AF_RESUME_ANSWER"] = req.Answer
+	}
+
+	// M6: the compiled per-role dsh --patch overlay
+	// (internal/domain/manifest.Manifest.Patch) — deploy/runner-entrypoint.sh
+	// writes this to a tmpfs file and passes it as --patch alongside
+	// --profile agentfleet-runner. Empty for a manifest-less project.
+	if req.Patch != "" {
+		env["AF_PATCH"] = req.Patch
 	}
 
 	// M4 layer 4 (development-plan.md §8): every outbound call from inside

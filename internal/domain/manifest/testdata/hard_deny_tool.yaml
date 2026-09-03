@@ -1,0 +1,4 @@
+agents:
+  implementer:
+    model: deepseek-v4-pro
+    tools: [read, gh_pr_merge]

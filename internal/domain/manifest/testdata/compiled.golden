@@ -1,0 +1,17 @@
+--- policy ---
+implementer: {"mediated_tools":["gh_pr_create","ask_orchestrator","report_to_orchestrator"],"deny":null,"arg_rules":null}
+reviewer: {"mediated_tools":["report_to_orchestrator"],"deny":null,"arg_rules":null}
+--- caps(implementer) ---
+{USD:8 Minutes:45 Questions:3}
+--- fanout ---
+{MaxDepth:3 MaxChildrenPerRun:4 MaxActiveSubtree:12}
+--- patch(implementer) ---
+- id: af-policy
+  config:
+    deny:
+        - merge
+        - gh_pr_merge
+- id: af-subagent
+  config:
+    spawnedRoles:
+        - reviewer
