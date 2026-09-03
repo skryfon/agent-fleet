@@ -63,6 +63,14 @@ type Querier interface {
 	CountStalledOutbox(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error)
 	CreateFeature(ctx context.Context, arg CreateFeatureParams) (Feature, error)
 	CreateIdentity(ctx context.Context, arg CreateIdentityParams) (Identity, error)
+	// COALESCE(..., '{}'), not a bare bind: a caller that leaves
+	// CreateProjectParams.Manifest at its zero value (nil []byte, which pgx
+	// sends as SQL NULL for jsonb) gets the same '{}' no-manifest default
+	// 0006_m6.up.sql's column DEFAULT would give an omitted column — every
+	// fixture/test written before M6 keeps working unchanged. internal/api's
+	// createProject always passes an already-parsed, already-hashed manifest
+	// once M6's manifest.Parse validates the request body, which simply wins
+	// over the fallback.
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	// feature_id (0003_questions.up.sql) is what question_one_open_per_feature_uk
 	// enforces against — a second ask_human call for a feature with an already-
@@ -118,10 +126,18 @@ type Querier interface {
 	// internal/supervisor's run.launch handler (P5) needs exactly this to build
 	// a launch request: the task content for TASK, the project's repo for
 	// REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
-	// exactly one repo before M6's multi-repo manifest work — and (M5)
+	// exactly one repo before M6's multi-repo manifest work — (M5)
 	// t.parent_run_id/t.role, so a spawned child's run row carries its own
-	// parent_run_id (CancelSubtree's walk key) and role without a second query.
+	// parent_run_id (CancelSubtree's walk key) and role without a second query
+	// — and (M6) the project's slug (per-project GH_TOKEN_<SLUG> resolution)
+	// and compiled manifest (role/model/prompt/tool-policy/budget resolution).
 	GetLaunchContext(ctx context.Context, id uuid.UUID) (GetLaunchContextRow, error)
+	// internal/api's resolveManifest (M6): project_id lives only on feature
+	// today (0001_init.up.sql) — this walk is the same run -> task -> feature
+	// -> project join internal/store/queries/run.sql's GetLaunchContext
+	// already does; project_id is deliberately NOT denormalized onto run/task,
+	// nothing else needs it and this join is indexed on every FK it crosses.
+	GetManifestForRun(ctx context.Context, id uuid.UUID) ([]byte, error)
 	GetPause(ctx context.Context, scope string) (Pause, error)
 	GetProjectByID(ctx context.Context, id uuid.UUID) (Project, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
@@ -260,6 +276,10 @@ type Querier interface {
 	// via GetRunByID on the resume launch path).
 	SetRunDshSessionID(ctx context.Context, arg SetRunDshSessionIDParams) error
 	SetRunExited(ctx context.Context, arg SetRunExitedParams) (Run, error)
+	// internal/supervisor.Handlers.RunLaunch records which prompts/<role>@vN
+	// (internal/domain/prompts) was prepended to this run's TASK — an audit
+	// column, not a resolution key.
+	SetRunPromptVersion(ctx context.Context, arg SetRunPromptVersionParams) error
 	// Timeouts never auto-answer (development-plan.md §6) — this only marks the
 	// question TIMED_OUT; the accompanying task transition (TrPark) is a
 	// separate call in the same transaction, mirroring AnswerQuestion/
@@ -268,6 +288,10 @@ type Querier interface {
 	// POST /v1/runs/{id}/checkpoint (P4) calls this; internal/reconcile's
 	// "stale runs" job (P8) reads last_heartbeat_at back out via GetRunByID.
 	TouchRunHeartbeat(ctx context.Context, id uuid.UUID) error
+	// PUT /v1/projects/{slug}/manifest (M6): a manifest revision is not a
+	// DELETE + re-register. manifest_ref/manifest_hash move together with the
+	// new manifest — never let manifest_hash drift from what's actually stored.
+	UpdateProjectManifest(ctx context.Context, arg UpdateProjectManifestParams) (Project, error)
 	UpdateRunState(ctx context.Context, arg UpdateRunStateParams) (Run, error)
 	// The only place task.state ever changes. version is bumped for the SSE/
 	// read-path optimistic-concurrency story; the transition's own atomicity

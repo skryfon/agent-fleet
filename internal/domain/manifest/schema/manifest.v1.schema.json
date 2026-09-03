@@ -1,0 +1,96 @@
+{
+  "$id": "https://agentfleet.dev/schemas/manifest/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentFleet project.yaml v1",
+  "description": "Schema for .agentfleet/project.yaml (development-plan.md §5's manifest example, M6). Embedded via go:embed in internal/domain/manifest. This file's $id is already the eventual public URL, matching internal/domain/tasksmd's convention.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agents"],
+  "properties": {
+    "agents": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/agent" }
+    },
+    "fanout": { "$ref": "#/$defs/fanout" }
+  },
+  "$defs": {
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "tools"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "prompt": {
+          "type": "string",
+          "description": "Name of a prompt in internal/domain/prompts, e.g. implementer@v1. Optional — a role with none gets dsh-base's own system prompt only."
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "deny": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "arg_rules": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/arg_rule" }
+          },
+          "default": {}
+        },
+        "subagents": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "inline": { "type": "array", "items": { "type": "string" }, "default": [] },
+            "spawned": { "type": "array", "items": { "type": "string" }, "default": [] }
+          },
+          "default": {}
+        },
+        "sandbox": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "network": { "type": "array", "items": { "type": "string" }, "default": [] },
+            "writable": { "type": "array", "items": { "type": "string" }, "default": [] }
+          },
+          "default": {}
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "usd": { "type": "number", "minimum": 0, "default": 0 },
+            "minutes": { "type": "integer", "minimum": 0, "default": 0 },
+            "questions": { "type": "integer", "minimum": 0, "default": 0 }
+          },
+          "default": {}
+        }
+      }
+    },
+    "arg_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "op", "value"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "op": { "type": "string", "enum": ["equals", "in", "not_in"] },
+        "value": { "type": "string" }
+      }
+    },
+    "fanout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_depth": { "type": "integer", "minimum": 0 },
+        "max_children_per_run": { "type": "integer", "minimum": 0 },
+        "max_active_subtree": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -67,6 +67,14 @@ services:
       context: ..
       dockerfile: deploy/control-plane.Dockerfile
     networks: [core]
+    # M6 per-project credentials (development-plan.md §7 M6): every
+    # GH_TOKEN_<SLUG> in ../.env reaches this container's environment via
+    # env_file, whatever slugs exist — onboarding project N+1 is adding one
+    # line to .env and restarting, never a compose.yaml edit. Needed here
+    # (not just on supervisor below) so internal/redact.EnvValuesWithPrefix
+    # can redact a per-project token from emitted events — see
+    # cmd/control-plane/main.go's redactor construction.
+    env_file: ../.env
     environment:
       CONTROL_PLANE_ADDR: ":8080"
       DATABASE_URL: postgres://agentfleet:agentfleet@postgres:5432/agentfleet?sslmode=disable
@@ -94,6 +102,11 @@ services:
       context: ..
       dockerfile: deploy/supervisor.Dockerfile
     networks: [core]
+    # M6 per-project credentials — see control-plane's own env_file comment
+    # above. Here, cmd/supervisor/main.go's loadConfig sweeps every
+    # GH_TOKEN_<SLUG> this brings in to build projectGHTokens, which
+    # daemon.spec resolves per launch by project slug.
+    env_file: ../.env
     # Rootless Podman (D11): this bind-mounted socket keeps the REAL host
     # uid:gid of whoever owns it — verified live that this rootless setup
     # does not remap bind-mounted file ownership into the container's

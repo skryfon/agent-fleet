@@ -68,4 +68,18 @@ fi
 export DSH_HOME="$DSH_HOME_VOLUME"
 
 cd "$WORKTREE_DIR"
-exec node /opt/deepseek-harness/apps/cli/lib/bin.js --profile agentfleet-runner "${TASK:-}"
+
+# M6: the manifest-compiled per-role dsh --patch overlay
+# (internal/domain/manifest.Manifest.Patch), layered over the profile's own
+# runner/bundle/cordis.patch.yml — never a dsh-base row (D14). AF_PATCH is
+# unset for a manifest-less project, same as before M6. Written to /tmp
+# (tmpfs even under the read-only rootfs, development-plan.md §8) rather
+# than passed inline — a multi-line YAML value survives a file, not a CLI
+# argument.
+patch_args=()
+if [ -n "${AF_PATCH:-}" ]; then
+  printf '%s' "$AF_PATCH" >/tmp/af-patch.yml
+  patch_args=(--patch /tmp/af-patch.yml)
+fi
+
+exec node /opt/deepseek-harness/apps/cli/lib/bin.js --profile agentfleet-runner "${patch_args[@]}" "${TASK:-}"

@@ -34,7 +34,35 @@ function client(ctx: Context): RunClient {
 
 const CHECK_WORKERS_WAIT_SECONDS = 5
 
-export function apply(ctx: Context): void {
+export interface Config {
+  /**
+   * Role names this role's `spawn_worker` may target — M6's manifest
+   * `agents.<role>.subagents.spawned`
+   * (internal/domain/manifest.Manifest.Patch). Undefined/empty means
+   * unrestricted (every deployment before M6, and any role a manifest
+   * doesn't mention), matching af-policy's own "omitted config key keeps
+   * the default" convention. This is a LOCAL, fail-fast check — the
+   * control plane's own tool-dispatch policy (internal/policy.Evaluate)
+   * still gates the mediated spawn_worker call regardless; this just saves
+   * a round trip on an obviously-out-of-scope role.
+   */
+  spawnedRoles?: string[]
+}
+
+/**
+ * Pure predicate so it can be table-tested without booting cordis — same
+ * pattern as af-policy's own `violation()`. Returns an error message, or
+ * undefined to allow.
+ */
+export function spawnRoleViolation(role: string | undefined, spawnedRoles: string[] | undefined): string | undefined {
+  if (spawnedRoles === undefined || spawnedRoles.length === 0) return undefined
+  if (role === undefined) return undefined
+  if (spawnedRoles.includes(role)) return undefined
+
+  return `spawn_worker: role ${role} is not in this role's manifest subagents.spawned list (${spawnedRoles.join(', ')})`
+}
+
+export function apply(ctx: Context, config: Config = {}): void {
   ctx.tools.register(defineTool({
     name: 'spawn_worker',
     description: 'Spawn a worker to implement a piece of work as its own task, tracked and budgeted independently. Subject to the deployment\'s depth and fan-out caps.',
@@ -49,6 +77,11 @@ export function apply(ctx: Context): void {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
+      const violation = spawnRoleViolation(args.role, config.spawnedRoles)
+      if (violation !== undefined) {
+        throw new Error(violation)
+      }
+
       const dispatch = await client(ctx).dispatchTool('spawn_worker', {
         title: args.title, intent: args.intent, acceptance_criteria: args.acceptance_criteria, role: args.role,
       })

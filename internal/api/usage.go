@@ -43,9 +43,16 @@ func (s *Server) recordUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, budgetCaps, _, err := s.resolveManifest(r.Context(), run)
+	if err != nil {
+		writeTransitionErr(w, s.Log, err)
+
+		return
+	}
+
 	result, err := s.Store.RecordUsage(r.Context(), run.ID, task.FeatureID, store.UsageDelta{
 		TokensIn: req.TokensIn, TokensOut: req.TokensOut, CostUSD: req.CostUSD, Minutes: req.Minutes,
-	}, s.BudgetCaps)
+	}, budgetCaps)
 	if err != nil {
 		writeTransitionErr(w, s.Log, err)
 

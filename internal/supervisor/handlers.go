@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"agentfleet/internal/domain/manifest"
+	"agentfleet/internal/domain/prompts"
 	"agentfleet/internal/outbox"
 	db "agentfleet/internal/store/gen"
 )
@@ -57,10 +59,12 @@ type Handlers struct {
 	// is SUPERVISOR_SECRET, already shared between control-plane and the
 	// daemon for the container-report callback's auth.
 	RunTokenSecret string
-	// DefaultRole/DefaultModel are the M2 placeholder role/model for every
-	// launched run — development-plan.md §5's model-allocation table
-	// becomes real once M6's manifest compiler resolves them per task/role
-	// instead of a single process-wide default.
+	// DefaultRole/DefaultModel are the FALLBACK role/model for a project
+	// whose manifest declares no agents (M6) — development-plan.md §5's
+	// model-allocation table becomes real per task/role via a project's own
+	// manifest (internal/domain/manifest.Manifest), resolved in RunLaunch;
+	// these two remain the no-manifest fallback, same role as
+	// api.Server.Manifest/BudgetCaps/FanoutCaps.
 	DefaultRole  string
 	DefaultModel string
 }
@@ -126,9 +130,68 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 		return fmt.Errorf("run.launch: loading launch context for task %s: %w", taskID, err)
 	}
 
+	// M6: the project's compiled manifest (0006_m6.up.sql's project.manifest
+	// column, already schema/cross-field validated at registration —
+	// internal/api's createProject/updateProjectManifest). Agents is empty
+	// for a project registered before M6 or one whose manifest still sits
+	// at the '{}' default — every resolution below falls back to
+	// h.DefaultRole/h.DefaultModel in that case, same fallback role as
+	// api.Server.Manifest/BudgetCaps/FanoutCaps.
+	var projectManifest manifest.Manifest
+	if err := json.Unmarshal(launchCtx.ProjectManifest, &projectManifest); err != nil {
+		return fmt.Errorf("%w: run.launch: task %s's project manifest is not valid JSON: %v", outbox.ErrPoison, taskID, err)
+	}
+
+	// Role precedence: an explicit task.role (set by Store.ApplySpawn's
+	// spawn_worker role argument) always wins; otherwise a manifest naming
+	// exactly one agent has an unambiguous default; otherwise
+	// h.DefaultRole, same M2 placeholder as before M6.
 	role := h.DefaultRole
 	if launchCtx.Role != nil {
 		role = *launchCtx.Role
+	} else if len(projectManifest.Agents) == 1 {
+		for only := range projectManifest.Agents {
+			role = only
+		}
+	}
+
+	agent, hasManifestAgent := projectManifest.Agents[role]
+
+	model := h.DefaultModel
+	if hasManifestAgent && agent.Model != "" {
+		model = agent.Model
+	}
+
+	// promptVersion is an audit column only (internal/domain/prompts.Get
+	// resolves it at launch time, not again later) — recorded via
+	// SetRunPromptVersion once the run row exists, below.
+	var promptVersion, promptText string
+
+	if hasManifestAgent && agent.Prompt != "" {
+		text, err := prompts.Get(agent.Prompt)
+		if err != nil {
+			// manifest.Parse already validates prompt: against
+			// prompts.Names() at registration time — reaching here means
+			// the prompt library changed out from under an already-stored
+			// manifest, not a bad request; ErrPoison would just wedge the
+			// task forever, so surface it as a plain retryable error
+			// instead in case a redeploy fixes it.
+			return fmt.Errorf("run.launch: task %s: resolving prompt %q: %w", taskID, agent.Prompt, err)
+		}
+
+		promptVersion = agent.Prompt
+		promptText = text
+	}
+
+	var patch string
+
+	if hasManifestAgent {
+		patchBytes, err := projectManifest.Patch(role)
+		if err != nil {
+			return fmt.Errorf("run.launch: task %s: compiling manifest patch for role %s: %w", taskID, role, err)
+		}
+
+		patch = string(patchBytes)
 	}
 
 	// Resume detection (M3): TrAnswered's own run.launch effect carries the
@@ -183,7 +246,7 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 			TaskID:      taskID,
 			ParentRunID: launchCtx.ParentRunID,
 			Role:        role,
-			Model:       h.DefaultModel,
+			Model:       model,
 			State:       "PENDING",
 			TokenHash:   tokenHash(token),
 		})
@@ -194,20 +257,33 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 		return fmt.Errorf("run.launch: loading active run for task %s: %w", taskID, err)
 	}
 
+	if promptVersion != "" {
+		if err := q.SetRunPromptVersion(ctx, db.SetRunPromptVersionParams{ID: run.ID, PromptVersion: &promptVersion}); err != nil {
+			return fmt.Errorf("run.launch: recording prompt_version for run %s: %w", run.ID, err)
+		}
+	}
+
 	var acceptanceCriteria []string
 	if err := json.Unmarshal(launchCtx.AcceptanceCriteria, &acceptanceCriteria); err != nil {
 		return fmt.Errorf("%w: run.launch: task %s has malformed acceptance_criteria: %v", outbox.ErrPoison, taskID, err)
+	}
+
+	task := taskPrompt(launchCtx.Title, launchCtx.Intent, acceptanceCriteria)
+	if promptText != "" {
+		task = promptText + "\n\n" + task
 	}
 
 	if err := h.Daemon.Launch(ctx, LaunchRequest{
 		RunID:           run.ID.String(),
 		TaskID:          taskID.String(),
 		Token:           runToken(h.RunTokenSecret, run.ID),
-		Task:            taskPrompt(launchCtx.Title, launchCtx.Intent, acceptanceCriteria),
+		Task:            task,
 		RepoURL:         launchCtx.RepoUrl,
 		Role:            run.Role,
 		ResumeSessionID: resumeSessionID,
 		Answer:          answer,
+		ProjectSlug:     launchCtx.ProjectSlug,
+		Patch:           patch,
 	}); err != nil {
 		return fmt.Errorf("run.launch: daemon launch for run %s: %w", run.ID, err)
 	}

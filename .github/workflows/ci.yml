@@ -80,6 +80,12 @@ jobs:
       # documents for full boot, just showing up here first.
       - run: ./scripts/dump-config.sh --check
         working-directory: runner
+      # M6: the same check, with a fixture manifest-compiled --patch
+      # overlay layered on top (testdata/dump-config-manifest.golden) —
+      # catches a dsh upgrade silently changing how --patch itself layers,
+      # which the unpatched check above can't see.
+      - run: ./scripts/dump-config.sh --patch testdata/fixture-manifest.patch.yml --check
+        working-directory: runner
 
   migrations:
     runs-on: ubuntu-latest

@@ -1,0 +1,7 @@
+agents:
+  implementer:
+    model: deepseek-v4-pro
+    tools: [read]
+  reviewer:
+    model: deepseek-v4-pro
+    tools: [read]

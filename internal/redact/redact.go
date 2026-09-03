@@ -103,6 +103,28 @@ func FromEnv(lookup func(string) (string, bool), names ...string) *Redactor {
 	return New(literals, nil)
 }
 
+// EnvValuesWithPrefix returns the value of every entry in environ (the
+// "KEY=VALUE" shape os.Environ() produces) whose key starts with prefix —
+// e.g. EnvValuesWithPrefix(os.Environ(), "GH_TOKEN_") for M6's per-project
+// GH_TOKEN_<SLUG> credentials (development-plan.md §7 M6,
+// cmd/supervisor's envKeyForSlug), which FromEnv's fixed-name list can't
+// see since their names aren't known ahead of time. Callers feed the
+// result into WithLiterals — a new per-project token is redacted from
+// emitted events by the same mechanism as every other deployment secret,
+// with no per-project change to the redactor construction itself.
+func EnvValuesWithPrefix(environ []string, prefix string) []string {
+	var values []string
+
+	for _, kv := range environ {
+		key, val, ok := strings.Cut(kv, "=")
+		if ok && strings.HasPrefix(key, prefix) && val != "" {
+			values = append(values, val)
+		}
+	}
+
+	return values
+}
+
 // WithLiterals returns a new Redactor that also masks the given values — for
 // request-scoped secrets (e.g. one run's bearer token) layered on top of a
 // process-wide base Redactor built by FromEnv. Does not mutate the receiver.

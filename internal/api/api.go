@@ -34,28 +34,30 @@ type Server struct {
 	AdminToken       string
 	SupervisorSecret string
 
-	// Manifest is the process-wide mediated-tool policy every
-	// POST /v1/runs/{id}/tools/{name} call is evaluated against
-	// (internal/policy.Evaluate). M6's .agentfleet/project.yaml compiler
-	// will replace this with a manifest resolved per-project from the
-	// project row; until then it is supplied once at process startup (see
-	// cmd/control-plane/main.go) — a documented M2 simplification that
-	// internal/policy itself is not coupled to (Evaluate already takes a
+	// Manifest is the FALLBACK mediated-tool policy for a project whose own
+	// manifest declares no agents (development-plan.md §5's example, M6): a
+	// project registered before M6, or `project.manifest` still at
+	// 0006_m6.up.sql's default '{}'. A project with a real manifest gets
+	// its own compiled policy.Manifest instead — see resolveManifest.go and
+	// internal/domain/manifest.Manifest.Policy. Supplied once at process
+	// startup (cmd/control-plane/main.go); internal/policy itself is not
+	// coupled to this being process-wide (Evaluate already takes a
 	// Manifest per request, not a Server-wide one).
 	Manifest policy.Manifest
 
-	// BudgetCaps is every run's/feature's usd/minute/question ceiling —
-	// process-wide for M4, same documented M6 stand-in as Manifest above
-	// (the manifest compiler will own per-project caps; see
+	// BudgetCaps is the FALLBACK usd/minute/question ceiling — same
+	// no-manifest fallback role as Manifest above (see
 	// internal/store.RecordUsage's doc comment on why a zero cap is
-	// "uncapped," not "always breach").
+	// "uncapped," not "always breach"). A project's own manifest overrides
+	// this per role via internal/domain/manifest.Manifest.Caps.
 	BudgetCaps budget.Caps
 
-	// FanoutCaps bounds spawn_worker (development-plan.md §5/§7 M5):
-	// MaxDepth/MaxChildrenPerRun/MaxActiveSubtree, evaluated by
+	// FanoutCaps is the FALLBACK spawn_worker bound (development-plan.md
+	// §5/§7 M5): MaxDepth/MaxChildrenPerRun/MaxActiveSubtree, evaluated by
 	// internal/fanout.Check before internal/store.ApplySpawn ever runs.
-	// Process-wide for M5, same documented M6 stand-in as Manifest and
-	// BudgetCaps above.
+	// Same no-manifest fallback role as Manifest/BudgetCaps above; a
+	// project's own manifest overrides this via
+	// internal/domain/manifest.Manifest.FanoutCaps.
 	FanoutCaps fanout.Caps
 
 	// MaxBodyBytes overrides defaultMaxBodyBytes when non-zero — exposed for
@@ -83,6 +85,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/projects", s.authAdmin(s.createProject))
 	mux.HandleFunc("GET /v1/projects", s.authAdmin(s.listProjects))
 	mux.HandleFunc("GET /v1/projects/{slug}", s.authAdmin(s.getProject))
+	mux.HandleFunc("PUT /v1/projects/{slug}/manifest", s.authAdmin(s.updateProjectManifest))
 
 	mux.HandleFunc("POST /v1/projects/{slug}/features", s.authAdmin(s.createFeature))
 	mux.HandleFunc("GET /v1/projects/{slug}/features", s.authAdmin(s.listFeatures))

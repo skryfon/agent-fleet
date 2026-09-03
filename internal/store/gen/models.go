@@ -103,6 +103,7 @@ type Project struct {
 	Repos        []string           `json:"repos"`
 	Status       string             `json:"status"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	Manifest     []byte             `json:"manifest"`
 }
 
 type Question struct {
@@ -148,6 +149,7 @@ type Run struct {
 	LastHeartbeatAt pgtype.Timestamptz `json:"last_heartbeat_at"`
 	Attempt         int32              `json:"attempt"`
 	ExitCode        *int32             `json:"exit_code"`
+	PromptVersion   *string            `json:"prompt_version"`
 }
 
 type RunInbox struct {

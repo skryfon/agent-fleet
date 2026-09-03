@@ -1,0 +1,23 @@
+agents:
+  implementer:
+    model: deepseek-v4-pro
+    prompt: implementer@v1
+    tools: [read, write, bash, git, gh_pr_create, ask_orchestrator, report_to_orchestrator]
+    subagents:
+      inline: [search]
+      spawned: [reviewer]
+    sandbox:
+      network: [github.com]
+      writable: [workspace]
+    budget:
+      usd: 8
+      minutes: 45
+      questions: 3
+  reviewer:
+    model: claude-opus-5
+    prompt: reviewer@v1
+    tools: [read, report_to_orchestrator]
+fanout:
+  max_depth: 3
+  max_children_per_run: 4
+  max_active_subtree: 12

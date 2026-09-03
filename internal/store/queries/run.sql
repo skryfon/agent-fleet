@@ -74,17 +74,26 @@ RETURNING *;
 -- internal/supervisor's run.launch handler (P5) needs exactly this to build
 -- a launch request: the task content for TASK, the project's repo for
 -- REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
--- exactly one repo before M6's multi-repo manifest work — and (M5)
+-- exactly one repo before M6's multi-repo manifest work — (M5)
 -- t.parent_run_id/t.role, so a spawned child's run row carries its own
--- parent_run_id (CancelSubtree's walk key) and role without a second query.
+-- parent_run_id (CancelSubtree's walk key) and role without a second query
+-- — and (M6) the project's slug (per-project GH_TOKEN_<SLUG> resolution)
+-- and compiled manifest (role/model/prompt/tool-policy/budget resolution).
 SELECT
     t.id AS task_id, t.title, t.intent, t.acceptance_criteria,
     t.parent_run_id, t.role,
-    p.repos[1]::text AS repo_url
+    p.repos[1]::text AS repo_url,
+    p.slug AS project_slug, p.manifest AS project_manifest
 FROM task t
 JOIN feature f ON f.id = t.feature_id
 JOIN project p ON p.id = f.project_id
 WHERE t.id = $1;
+
+-- name: SetRunPromptVersion :exec
+-- internal/supervisor.Handlers.RunLaunch records which prompts/<role>@vN
+-- (internal/domain/prompts) was prepended to this run's TASK — an audit
+-- column, not a resolution key.
+UPDATE run SET prompt_version = $2 WHERE id = $1;
 
 -- name: IncrementRunEventSeq :one
 -- Bumps next_event_seq (under the row lock the caller already holds via

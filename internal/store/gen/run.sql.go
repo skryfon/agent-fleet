@@ -13,7 +13,7 @@ import (
 )
 
 const getActiveRunForTask = `-- name: GetActiveRunForTask :one
-SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code FROM run WHERE task_id = $1 AND state IN ('PENDING', 'STARTING', 'RUNNING')
+SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version FROM run WHERE task_id = $1 AND state IN ('PENDING', 'STARTING', 'RUNNING')
 `
 
 // run_active_per_task_uk (0002_control_plane.up.sql) guarantees at most one
@@ -44,6 +44,7 @@ func (q *Queries) GetActiveRunForTask(ctx context.Context, taskID uuid.UUID) (Ru
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
@@ -52,7 +53,8 @@ const getLaunchContext = `-- name: GetLaunchContext :one
 SELECT
     t.id AS task_id, t.title, t.intent, t.acceptance_criteria,
     t.parent_run_id, t.role,
-    p.repos[1]::text AS repo_url
+    p.repos[1]::text AS repo_url,
+    p.slug AS project_slug, p.manifest AS project_manifest
 FROM task t
 JOIN feature f ON f.id = t.feature_id
 JOIN project p ON p.id = f.project_id
@@ -67,14 +69,18 @@ type GetLaunchContextRow struct {
 	ParentRunID        pgtype.UUID `json:"parent_run_id"`
 	Role               *string     `json:"role"`
 	RepoUrl            string      `json:"repo_url"`
+	ProjectSlug        string      `json:"project_slug"`
+	ProjectManifest    []byte      `json:"project_manifest"`
 }
 
 // internal/supervisor's run.launch handler (P5) needs exactly this to build
 // a launch request: the task content for TASK, the project's repo for
 // REPO_URL (repos[1], sqlc/pg arrays are 1-indexed) — every project has
-// exactly one repo before M6's multi-repo manifest work — and (M5)
+// exactly one repo before M6's multi-repo manifest work — (M5)
 // t.parent_run_id/t.role, so a spawned child's run row carries its own
-// parent_run_id (CancelSubtree's walk key) and role without a second query.
+// parent_run_id (CancelSubtree's walk key) and role without a second query
+// — and (M6) the project's slug (per-project GH_TOKEN_<SLUG> resolution)
+// and compiled manifest (role/model/prompt/tool-policy/budget resolution).
 func (q *Queries) GetLaunchContext(ctx context.Context, id uuid.UUID) (GetLaunchContextRow, error) {
 	row := q.db.QueryRow(ctx, getLaunchContext, id)
 	var i GetLaunchContextRow
@@ -86,12 +92,14 @@ func (q *Queries) GetLaunchContext(ctx context.Context, id uuid.UUID) (GetLaunch
 		&i.ParentRunID,
 		&i.Role,
 		&i.RepoUrl,
+		&i.ProjectSlug,
+		&i.ProjectManifest,
 	)
 	return i, err
 }
 
 const getRunByID = `-- name: GetRunByID :one
-SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code FROM run WHERE id = $1
+SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version FROM run WHERE id = $1
 `
 
 func (q *Queries) GetRunByID(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -120,12 +128,13 @@ func (q *Queries) GetRunByID(ctx context.Context, id uuid.UUID) (Run, error) {
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
 
 const getRunForUpdate = `-- name: GetRunForUpdate :one
-SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code FROM run WHERE id = $1 FOR UPDATE
+SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version FROM run WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetRunForUpdate(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -154,13 +163,14 @@ func (q *Queries) GetRunForUpdate(ctx context.Context, id uuid.UUID) (Run, error
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
 
 const incrementRunAttempt = `-- name: IncrementRunAttempt :one
 UPDATE run SET attempt = attempt + 1, updated_at = now() WHERE id = $1
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 func (q *Queries) IncrementRunAttempt(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -189,13 +199,14 @@ func (q *Queries) IncrementRunAttempt(ctx context.Context, id uuid.UUID) (Run, e
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
 
 const incrementRunEventSeq = `-- name: IncrementRunEventSeq :one
 UPDATE run SET next_event_seq = next_event_seq + 1, updated_at = now() WHERE id = $1
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 // Bumps next_event_seq (under the row lock the caller already holds via
@@ -230,6 +241,7 @@ func (q *Queries) IncrementRunEventSeq(ctx context.Context, id uuid.UUID) (Run, 
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
@@ -237,7 +249,7 @@ func (q *Queries) IncrementRunEventSeq(ctx context.Context, id uuid.UUID) (Run, 
 const insertRun = `-- name: InsertRun :one
 INSERT INTO run (task_id, parent_run_id, role, model, state, token_hash)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 type InsertRunParams struct {
@@ -285,6 +297,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (Run, erro
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
@@ -292,7 +305,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (Run, erro
 const insertRunWithID = `-- name: InsertRunWithID :one
 INSERT INTO run (id, task_id, parent_run_id, role, model, state, token_hash)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 type InsertRunWithIDParams struct {
@@ -345,12 +358,13 @@ func (q *Queries) InsertRunWithID(ctx context.Context, arg InsertRunWithIDParams
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
 
 const listActiveRuns = `-- name: ListActiveRuns :many
-SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code FROM run WHERE state IN ('PENDING', 'STARTING', 'RUNNING') ORDER BY created_at
+SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version FROM run WHERE state IN ('PENDING', 'STARTING', 'RUNNING') ORDER BY created_at
 `
 
 // The reconciler's (P8) and the supervisor's own startup reap's view of
@@ -387,6 +401,7 @@ func (q *Queries) ListActiveRuns(ctx context.Context) ([]Run, error) {
 			&i.LastHeartbeatAt,
 			&i.Attempt,
 			&i.ExitCode,
+			&i.PromptVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -403,7 +418,7 @@ UPDATE run
 SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3, cost_usd = cost_usd + $4,
     version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 type RecordRunUsageParams struct {
@@ -448,6 +463,7 @@ func (q *Queries) RecordRunUsage(ctx context.Context, arg RecordRunUsageParams) 
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
@@ -457,7 +473,7 @@ UPDATE run
 SET state = $2, container_id = $3, started_at = now(),
     version = version + 1, updated_at = now(), next_event_seq = next_event_seq + 1
 WHERE id = $1
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 type SetRunContainerStartedParams struct {
@@ -492,6 +508,7 @@ func (q *Queries) SetRunContainerStarted(ctx context.Context, arg SetRunContaine
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }
@@ -519,7 +536,7 @@ UPDATE run
 SET state = $2, exit_code = $3, ended_at = now(),
     version = version + 1, updated_at = now(), next_event_seq = next_event_seq + 1
 WHERE id = $1
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 type SetRunExitedParams struct {
@@ -554,8 +571,26 @@ func (q *Queries) SetRunExited(ctx context.Context, arg SetRunExitedParams) (Run
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
+}
+
+const setRunPromptVersion = `-- name: SetRunPromptVersion :exec
+UPDATE run SET prompt_version = $2 WHERE id = $1
+`
+
+type SetRunPromptVersionParams struct {
+	ID            uuid.UUID `json:"id"`
+	PromptVersion *string   `json:"prompt_version"`
+}
+
+// internal/supervisor.Handlers.RunLaunch records which prompts/<role>@vN
+// (internal/domain/prompts) was prepended to this run's TASK — an audit
+// column, not a resolution key.
+func (q *Queries) SetRunPromptVersion(ctx context.Context, arg SetRunPromptVersionParams) error {
+	_, err := q.db.Exec(ctx, setRunPromptVersion, arg.ID, arg.PromptVersion)
+	return err
 }
 
 const touchRunHeartbeat = `-- name: TouchRunHeartbeat :exec
@@ -574,7 +609,7 @@ UPDATE run
 SET state = $2, version = version + 1, updated_at = now(),
     next_event_seq = next_event_seq + 1
 WHERE id = $1
-RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code
+RETURNING id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version
 `
 
 type UpdateRunStateParams struct {
@@ -608,6 +643,7 @@ func (q *Queries) UpdateRunState(ctx context.Context, arg UpdateRunStateParams) 
 		&i.LastHeartbeatAt,
 		&i.Attempt,
 		&i.ExitCode,
+		&i.PromptVersion,
 	)
 	return i, err
 }

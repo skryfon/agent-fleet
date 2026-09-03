@@ -92,8 +92,15 @@ func (s *Server) dispatchTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	manifestPolicy, _, _, err := s.resolveManifest(r.Context(), run)
+	if err != nil {
+		writeTransitionErr(w, s.Log, err)
+
+		return
+	}
+
 	decision := policy.Evaluate(policy.Request{
-		Role: run.Role, Tool: tool, Args: args, Manifest: s.Manifest,
+		Role: run.Role, Tool: tool, Args: args, Manifest: manifestPolicy,
 	})
 
 	// Flagged in DB review: unlike every transition-writing path,
@@ -251,10 +258,15 @@ func (s *Server) askHuman(r *http.Request, run db.Run, rawArgs []byte) (askHuman
 		options = marshaled
 	}
 
+	_, budgetCaps, _, err := s.resolveManifest(r.Context(), run)
+	if err != nil {
+		return askHumanResult{}, err
+	}
+
 	result, err := s.Store.ApplyAsk(r.Context(), s.Redact, store.AskRequest{
 		RunID: run.ID, TaskID: run.TaskID,
 		Kind: args.Kind, Body: args.Question, Options: options, Addressee: args.Addressee,
-		Actor: "run:" + run.ID.String(), Caps: s.BudgetCaps,
+		Actor: "run:" + run.ID.String(), Caps: budgetCaps,
 	})
 	if err != nil {
 		return askHumanResult{}, err
@@ -298,7 +310,12 @@ func (s *Server) spawnWorker(r *http.Request, run db.Run, rawArgs []byte, dedupe
 		return spawnWorkerResult{}, fanout.Decision{}, fmt.Errorf("spawn_worker: counting active subtree for task %s: %w", parentTask.ID, err)
 	}
 
-	fanoutDecision := fanout.Check(int(parentTask.Depth)+1, int(siblings), int(subtree)+1, s.FanoutCaps)
+	_, _, fanoutCaps, err := s.resolveManifest(ctx, run)
+	if err != nil {
+		return spawnWorkerResult{}, fanout.Decision{}, err
+	}
+
+	fanoutDecision := fanout.Check(int(parentTask.Depth)+1, int(siblings), int(subtree)+1, fanoutCaps)
 	if !fanoutDecision.Allow {
 		return spawnWorkerResult{}, fanoutDecision, nil
 	}
@@ -361,10 +378,15 @@ func (s *Server) askOrchestrator(r *http.Request, run db.Run, rawArgs []byte) (a
 		options = marshaled
 	}
 
+	_, budgetCaps, _, err := s.resolveManifest(ctx, run)
+	if err != nil {
+		return askHumanResult{}, err
+	}
+
 	result, err := s.Store.ApplyAsk(ctx, s.Redact, store.AskRequest{
 		RunID: run.ID, TaskID: run.TaskID,
 		Kind: args.Kind, Body: args.Question, Options: options, Addressee: args.Addressee,
-		Actor: "run:" + run.ID.String(), ToRunID: &toRunID, Caps: s.BudgetCaps,
+		Actor: "run:" + run.ID.String(), ToRunID: &toRunID, Caps: budgetCaps,
 	})
 	if err != nil {
 		return askHumanResult{}, err

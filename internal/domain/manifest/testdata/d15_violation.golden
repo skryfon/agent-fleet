@@ -1,0 +1,1 @@
+reviewer and implementer both use model family "deepseek" — D15 (docs/adr/0015) requires the reviewer to run a different model family from the implementer

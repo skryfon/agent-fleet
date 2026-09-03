@@ -57,6 +57,16 @@ type LaunchRequest struct {
 	// Both empty on an ordinary first launch.
 	ResumeSessionID string `json:"resume_session_id,omitempty"`
 	Answer          string `json:"answer,omitempty"`
+	// ProjectSlug (M6) lets the daemon resolve a per-project GH_TOKEN_<SLUG>
+	// instead of its own process-wide fallback — see cmd/supervisor/
+	// daemon.go's spec(). Empty for a project with no manifest.
+	ProjectSlug string `json:"project_slug,omitempty"`
+	// Patch (M6) is the compiled dsh --patch overlay
+	// (internal/domain/manifest.Manifest.Patch) for this run's role, layered
+	// over runner/bundle/cordis.patch.yml — deploy/runner-entrypoint.sh
+	// writes it to a tmpfs file and passes `--patch <file>`. Empty for a
+	// project with no manifest or a role the manifest doesn't declare.
+	Patch string `json:"patch,omitempty"`
 }
 
 // KillRequest is the daemon's POST /kill body.

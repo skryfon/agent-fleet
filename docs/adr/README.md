@@ -21,6 +21,7 @@ One file per locked decision in `development-plan.md` §1, named
 | [0014](0014-agentfleet-code-lives-in-our-own-bundle.md) | D14 — Everything AgentFleet-specific lives in our own dsh bundle |
 | [0015](0015-reviewers-use-a-different-model-family.md) | D15 — Reviewer agents use a different model family from implementer agents |
 | [0016](0016-egress-proxy-terminates-tls.md) | M4 — The egress proxy terminates TLS to filter the merge endpoint by path |
+| [0017](0017-manifest-compiles-to-a-dsh-patch.md) | M6 — `.agentfleet/project.yaml` compiles to a generated, per-run dsh `--patch` overlay |
 
 ## Template
 

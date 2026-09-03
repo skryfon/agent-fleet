@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -126,7 +127,16 @@ type config struct {
 	runnerNetwork     string
 	maxConcurrentRuns int
 	ghToken           string
-	omniRouteAPIKey   string
+	// projectGHTokens holds every GH_TOKEN_<SLUG> found in this process's
+	// environment at startup (M6 per-project credential isolation,
+	// development-plan.md §7 M6), keyed by the env var name itself (see
+	// envKeyForSlug) — daemon.spec looks one up per launch, falling back to
+	// ghToken when a project has none. A per-project token is swept by the
+	// same internal/redact.FromEnv mechanism that already redacts GH_TOKEN
+	// from emitted events (extended to match GH_TOKEN* — this is why: a new
+	// prefix here without that change would silently un-redact itself).
+	projectGHTokens map[string]string
+	omniRouteAPIKey string
 	// egressProxyURL, when set, is passed into every launched runner as
 	// HTTP_PROXY/HTTPS_PROXY (development-plan.md §8, M4 layer 4). Empty is
 	// a valid, if unsafe, configuration — a deployment that hasn't run
@@ -156,6 +166,15 @@ func loadConfig() (config, error) {
 	} {
 		if v == "" {
 			return config{}, errors.New(name + " is required")
+		}
+	}
+
+	cfg.projectGHTokens = make(map[string]string)
+
+	for _, kv := range os.Environ() {
+		key, val, ok := strings.Cut(kv, "=")
+		if ok && strings.HasPrefix(key, "GH_TOKEN_") {
+			cfg.projectGHTokens[key] = val
 		}
 	}
 

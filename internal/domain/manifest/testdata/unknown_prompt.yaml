@@ -1,0 +1,5 @@
+agents:
+  implementer:
+    model: deepseek-v4-pro
+    prompt: implementer@v99
+    tools: [read]
