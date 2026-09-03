@@ -42,6 +42,15 @@ type Querier interface {
 	// (or a restart racing the old one's in-flight work) never double-claims a
 	// row — internal/outbox.Relay (P3) is the only caller.
 	ClaimOutboxBatch(ctx context.Context, limit int64) ([]Outbox, error)
+	// GET /v1/metrics/cost (M7, development-plan.md §11 "cost per merged PR" and
+	// the cost dashboard's feature breakdown). Grouped over every run ever
+	// created, not just active ones — a dashboard, not a live-run view.
+	CostByFeature(ctx context.Context) ([]CostByFeatureRow, error)
+	// GET /v1/metrics/cost's model breakdown.
+	CostByModel(ctx context.Context) ([]CostByModelRow, error)
+	// GET /v1/metrics/cost's role breakdown — D15's reviewer-vs-implementer
+	// model-family split shows up here as two very different cost profiles.
+	CostByRole(ctx context.Context) ([]CostByRoleRow, error)
 	// The direct fan-out width internal/fanout.Check's MaxChildrenPerRun caps —
 	// how many still-active tasks the given run has already spawned.
 	CountActiveChildTasksForRun(ctx context.Context, parentRunID pgtype.UUID) (int64, error)
@@ -59,7 +68,15 @@ type Querier interface {
 	// M5) have ever been recorded. The append-only event log is the source —
 	// no denormalised counter column, per that handler's own doc comment.
 	CountDeviationEvents(ctx context.Context) (int64, error)
+	// §11 "cost per merged PR — the only cost number that means anything":
+	// the denominator. A DONE task with at least one artifact is the closest
+	// proxy this schema has to "merged PR" without a control-plane call to
+	// api.github.com.
+	CountDoneTasksWithArtifact(ctx context.Context) (int64, error)
 	CountPoisonedOutbox(ctx context.Context) (int64, error)
+	// §11's "policy violations — should trend to zero", read straight off the
+	// append-only log like CountDeviationEvents above it. No counter column.
+	CountPolicyViolations(ctx context.Context) (int64, error)
 	CountStalledOutbox(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error)
 	CreateFeature(ctx context.Context, arg CreateFeatureParams) (Feature, error)
 	CreateIdentity(ctx context.Context, arg CreateIdentityParams) (Identity, error)
@@ -247,6 +264,14 @@ type Querier interface {
 	// from asked_at/nudged_at/escalated_at; this just narrows the scan to rows
 	// that could possibly be due, using the earliest rung (4h) as the floor.
 	ListOverdueQuestions(ctx context.Context, askedAt pgtype.Timestamptz) ([]Question, error)
+	// GET /v1/approvals/pending (M7): every task sitting in REVIEW. Deliberately
+	// no artifact join here — sqlc/pgx typed a LEFT JOIN LATERAL's output
+	// columns as non-nullable despite real NULLs (a REVIEW task with no artifact
+	// yet is a real state), which crashes the scan; the handler instead calls
+	// the existing GetLatestArtifactByTask (artifact.sql) per task, the same
+	// query reviewByZulipTopic already uses, and treats ErrNoRows as "no
+	// artifact" rather than an error.
+	ListPendingApprovals(ctx context.Context) ([]ListPendingApprovalsRow, error)
 	ListProjects(ctx context.Context) ([]Project, error)
 	ListTasksByFeature(ctx context.Context, featureID uuid.UUID) ([]Task, error)
 	ListTasksByState(ctx context.Context, state string) ([]Task, error)
@@ -258,6 +283,10 @@ type Querier interface {
 	// guessed client-side (runner/packages/af-control's own comment on the same
 	// rule).
 	MirrorHighWaterSeq(ctx context.Context, runID uuid.UUID) (int64, error)
+	// §11's "question rate per run and feature". to_run_id IS NULL restricts this
+	// to HUMAN-facing asks — D7's ask_orchestrator questions are agent-to-agent
+	// routing, not the "planning underperformed" signal this metric is for.
+	QuestionRate(ctx context.Context) (QuestionRateRow, error)
 	// M4's usage handler (POST /v1/runs/{id}/usage, internal/api/usage.go):
 	// tokens/cost accumulate on the run row itself, so the budget check always
 	// sees the run's own running total, not just the latest delta a client
@@ -285,6 +314,8 @@ type Querier interface {
 	// separate call in the same transaction, mirroring AnswerQuestion/
 	// TrAnswered's split.
 	TimeoutQuestion(ctx context.Context, id uuid.UUID) (Question, error)
+	// GET /v1/metrics/cost's total, and the numerator of §11's cost-per-merged-PR.
+	TotalCostUSD(ctx context.Context) (pgtype.Numeric, error)
 	// POST /v1/runs/{id}/checkpoint (P4) calls this; internal/reconcile's
 	// "stale runs" job (P8) reads last_heartbeat_at back out via GetRunByID.
 	TouchRunHeartbeat(ctx context.Context, id uuid.UUID) error

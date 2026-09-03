@@ -4,7 +4,14 @@
 	handle /healthz {
 		reverse_proxy control-plane:8080
 	}
+	handle /v1/* {
+		# text/event-stream (GET /v1/events) streams unbuffered through
+		# reverse_proxy by default — no flush_interval needed.
+		reverse_proxy control-plane:8080
+	}
 	handle {
-		respond "agentfleet: webapp lands in M7" 200
+		root * /srv/webapp
+		try_files {path} /index.html
+		file_server
 	}
 }

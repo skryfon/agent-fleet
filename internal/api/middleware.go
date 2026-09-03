@@ -52,6 +52,21 @@ func (rec *statusRecorder) WriteHeader(status int) {
 	rec.ResponseWriter.WriteHeader(status)
 }
 
+// Flush makes statusRecorder itself satisfy http.Flusher by forwarding to
+// the wrapped ResponseWriter, if that concrete writer supports it.
+// Embedding http.ResponseWriter only promotes the methods the INTERFACE
+// declares (Header/Write/WriteHeader) — not Flush, which the concrete
+// net/http writer has but the interface type doesn't — so without this,
+// every handler behind slogRequest (every handler: api.go's middleware
+// chain wraps all of them) sees `w.(http.Flusher)` fail. GET /v1/events
+// (events_sse.go) needs exactly this assertion to stream at all; verified
+// live as a 500 on every request through the real chain before this fix.
+func (rec *statusRecorder) Flush() {
+	if f, ok := rec.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (s *Server) slogRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -109,10 +124,12 @@ func bearerToken(r *http.Request) (string, bool) {
 }
 
 // authAdmin gates every human/general route (project, feature, task
-// lifecycle, SSE, the deferred M3/M4 endpoints) behind one shared bearer
-// token. Real identity auth (Zulip/GitHub-backed) is M7's webapp — a single
-// process-wide admin token is M2's documented placeholder, not the final
-// story.
+// lifecycle, SSE, the M3/M4/M7 endpoints) behind one shared bearer token.
+// M7's webapp (webapp/README.md) deliberately keeps this token as its own
+// auth — every approval it makes records as actor "api:approve", same as a
+// direct API call. Real per-user identity auth (Zulip/GitHub-backed) is a
+// named follow-up, not built by M7; a single process-wide admin token is
+// M2's documented placeholder, not the final story.
 func (s *Server) authAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.AdminToken == "" {

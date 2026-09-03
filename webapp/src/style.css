@@ -1,0 +1,153 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0e1116;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --danger: #f85149;
+  --warn: #d29922;
+  --ok: #3fb950;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#root {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+h1 {
+  font-size: 1.1rem;
+  margin: 0 0 1rem;
+}
+
+nav {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+nav button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  border-bottom: 2px solid transparent;
+}
+
+nav button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+button.action {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+}
+
+button.action.danger {
+  background: var(--danger);
+}
+
+button.action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.bar-track {
+  background: var(--border);
+  border-radius: 3px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  background: var(--accent);
+  height: 100%;
+}
+
+.flag-policy_violation,
+.flag-budget_breached {
+  color: var(--danger);
+}
+
+.gate {
+  max-width: 360px;
+  margin: 4rem auto;
+  text-align: center;
+}
+
+.gate input {
+  width: 100%;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.metric {
+  display: inline-block;
+  min-width: 180px;
+}
+
+.metric .value {
+  font-size: 1.6rem;
+}

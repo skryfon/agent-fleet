@@ -101,6 +101,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/events", s.authAdmin(s.eventsSSE))
 	// M5, development-plan.md §11: drift rate (deviations per task).
 	mux.HandleFunc("GET /v1/metrics/drift", s.authAdmin(s.drift))
+	// M7: cost dashboard and the Metrics tab's single-fetch summary.
+	mux.HandleFunc("GET /v1/metrics/cost", s.authAdmin(s.cost))
+	mux.HandleFunc("GET /v1/metrics/summary", s.authAdmin(s.summary))
+	// M7: approval queue — every task in REVIEW, with its artifact if one
+	// has been recorded yet.
+	mux.HandleFunc("GET /v1/approvals/pending", s.authAdmin(s.listPendingApprovals))
 
 	mux.HandleFunc("POST /v1/runs/{id}/events", s.authRun(s.postRunEvents))
 	mux.HandleFunc("POST /v1/runs/{id}/tools/{name}", s.authRun(s.dispatchTool))

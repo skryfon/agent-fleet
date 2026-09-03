@@ -105,6 +105,59 @@ UPDATE run SET prompt_version = $2 WHERE id = $1;
 UPDATE run SET next_event_seq = next_event_seq + 1, updated_at = now() WHERE id = $1
 RETURNING *;
 
+-- name: CostByFeature :many
+-- GET /v1/metrics/cost (M7, development-plan.md §11 "cost per merged PR" and
+-- the cost dashboard's feature breakdown). Grouped over every run ever
+-- created, not just active ones — a dashboard, not a live-run view.
+SELECT f.id AS feature_id, f.slug AS feature_slug, p.slug AS project_slug,
+       sum(r.cost_usd)::numeric AS cost_usd,
+       sum(r.tokens_in)::bigint AS tokens_in,
+       sum(r.tokens_out)::bigint AS tokens_out,
+       count(*)::bigint AS runs
+FROM run r
+JOIN task t ON t.id = r.task_id
+JOIN feature f ON f.id = t.feature_id
+JOIN project p ON p.id = f.project_id
+GROUP BY f.id, f.slug, p.slug
+ORDER BY cost_usd DESC;
+
+-- name: CostByRole :many
+-- GET /v1/metrics/cost's role breakdown — D15's reviewer-vs-implementer
+-- model-family split shows up here as two very different cost profiles.
+SELECT r.role,
+       sum(r.cost_usd)::numeric AS cost_usd,
+       sum(r.tokens_in)::bigint AS tokens_in,
+       sum(r.tokens_out)::bigint AS tokens_out,
+       count(*)::bigint AS runs
+FROM run r
+GROUP BY r.role
+ORDER BY cost_usd DESC;
+
+-- name: CostByModel :many
+-- GET /v1/metrics/cost's model breakdown.
+SELECT r.model,
+       sum(r.cost_usd)::numeric AS cost_usd,
+       sum(r.tokens_in)::bigint AS tokens_in,
+       sum(r.tokens_out)::bigint AS tokens_out,
+       count(*)::bigint AS runs
+FROM run r
+GROUP BY r.model
+ORDER BY cost_usd DESC;
+
+-- name: TotalCostUSD :one
+-- GET /v1/metrics/cost's total, and the numerator of §11's cost-per-merged-PR.
+SELECT COALESCE(sum(cost_usd), 0)::numeric FROM run;
+
+-- name: CountDoneTasksWithArtifact :one
+-- §11 "cost per merged PR — the only cost number that means anything":
+-- the denominator. A DONE task with at least one artifact is the closest
+-- proxy this schema has to "merged PR" without a control-plane call to
+-- api.github.com.
+SELECT count(DISTINCT t.id)::bigint
+FROM task t
+JOIN artifact a ON a.task_id = t.id
+WHERE t.state = 'DONE';
+
 -- name: RecordRunUsage :one
 -- M4's usage handler (POST /v1/runs/{id}/usage, internal/api/usage.go):
 -- tokens/cost accumulate on the run row itself, so the budget check always

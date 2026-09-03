@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
+
 	"agentfleet/internal/store"
 )
 
@@ -60,4 +62,65 @@ func (s *Server) createApproval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// pendingApproval is one card in GET /v1/approvals/pending — the webapp's
+// approval queue view (development-plan.md §7 M7). Artifact is nil when the
+// task is in REVIEW but has not yet had a PR artifact recorded; the webapp
+// renders that as "no artifact" with both decision buttons disabled, per
+// approval.subject_sha256's mandatory-hash-binding invariant (§3) — there is
+// nothing to approve against yet.
+type pendingApproval struct {
+	TaskID      string  `json:"task_id"`
+	Title       string  `json:"title"`
+	Intent      string  `json:"intent"`
+	Lane        string  `json:"lane"`
+	Role        *string `json:"role,omitempty"`
+	FeatureSlug string  `json:"feature_slug"`
+	ZulipTopic  *string `json:"zulip_topic,omitempty"`
+	ProjectSlug string  `json:"project_slug"`
+
+	Artifact *pendingApprovalArtifact `json:"artifact"`
+}
+
+type pendingApprovalArtifact struct {
+	Kind   string `json:"kind"`
+	URI    string `json:"uri"`
+	SHA256 string `json:"sha256"`
+}
+
+// listPendingApprovals is GET /v1/approvals/pending. See
+// store/queries/approval.sql's ListPendingApprovals doc comment for why the
+// artifact lookup is a per-task follow-up query rather than a join.
+func (s *Server) listPendingApprovals(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.Store.Q().ListPendingApprovals(r.Context())
+	if err != nil {
+		writeTransitionErr(w, s.Log, err)
+
+		return
+	}
+
+	out := make([]pendingApproval, len(tasks))
+
+	for i, t := range tasks {
+		out[i] = pendingApproval{
+			TaskID: t.TaskID.String(), Title: t.Title, Intent: t.Intent, Lane: t.Lane,
+			Role: t.Role, FeatureSlug: t.FeatureSlug, ZulipTopic: t.ZulipTopic, ProjectSlug: t.ProjectSlug,
+		}
+
+		artifact, err := s.Store.Q().GetLatestArtifactByTask(r.Context(), t.TaskID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+
+			writeTransitionErr(w, s.Log, err)
+
+			return
+		}
+
+		out[i].Artifact = &pendingApprovalArtifact{Kind: artifact.Kind, URI: artifact.Uri, SHA256: artifact.Sha256}
+	}
+
+	writeJSON(w, http.StatusOK, out)
 }

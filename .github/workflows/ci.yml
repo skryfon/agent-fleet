@@ -87,6 +87,26 @@ jobs:
       - run: ./scripts/dump-config.sh --patch testdata/fixture-manifest.patch.yml --check
         working-directory: runner
 
+  # M7: webapp/ has no dsh dependency (unlike runner/ above) — plain npm, no
+  # submodule checkout, no pnpm/dsh-cache steps.
+  webapp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm ci
+        working-directory: webapp
+      - run: npm run typecheck
+        working-directory: webapp
+      - run: npx vitest run
+        working-directory: webapp
+      - run: npm run build
+        working-directory: webapp
+
   migrations:
     runs-on: ubuntu-latest
     services:

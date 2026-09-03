@@ -7,6 +7,9 @@ package db
 
 import (
 	"context"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const insertApproval = `-- name: InsertApproval :one
@@ -48,4 +51,69 @@ func (q *Queries) InsertApproval(ctx context.Context, arg InsertApprovalParams) 
 		&i.Note,
 	)
 	return i, err
+}
+
+const listPendingApprovals = `-- name: ListPendingApprovals :many
+SELECT t.id AS task_id, t.title, t.intent, t.acceptance_criteria, t.lane,
+       t.role, t.updated_at,
+       f.id AS feature_id, f.slug AS feature_slug, f.zulip_topic,
+       p.slug AS project_slug
+FROM task t
+JOIN feature f ON f.id = t.feature_id
+JOIN project p ON p.id = f.project_id
+WHERE t.state = 'REVIEW'
+ORDER BY t.updated_at
+`
+
+type ListPendingApprovalsRow struct {
+	TaskID             uuid.UUID          `json:"task_id"`
+	Title              string             `json:"title"`
+	Intent             string             `json:"intent"`
+	AcceptanceCriteria []byte             `json:"acceptance_criteria"`
+	Lane               string             `json:"lane"`
+	Role               *string            `json:"role"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	FeatureID          uuid.UUID          `json:"feature_id"`
+	FeatureSlug        string             `json:"feature_slug"`
+	ZulipTopic         *string            `json:"zulip_topic"`
+	ProjectSlug        string             `json:"project_slug"`
+}
+
+// GET /v1/approvals/pending (M7): every task sitting in REVIEW. Deliberately
+// no artifact join here — sqlc/pgx typed a LEFT JOIN LATERAL's output
+// columns as non-nullable despite real NULLs (a REVIEW task with no artifact
+// yet is a real state), which crashes the scan; the handler instead calls
+// the existing GetLatestArtifactByTask (artifact.sql) per task, the same
+// query reviewByZulipTopic already uses, and treats ErrNoRows as "no
+// artifact" rather than an error.
+func (q *Queries) ListPendingApprovals(ctx context.Context) ([]ListPendingApprovalsRow, error) {
+	rows, err := q.db.Query(ctx, listPendingApprovals)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingApprovalsRow
+	for rows.Next() {
+		var i ListPendingApprovalsRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.Title,
+			&i.Intent,
+			&i.AcceptanceCriteria,
+			&i.Lane,
+			&i.Role,
+			&i.UpdatedAt,
+			&i.FeatureID,
+			&i.FeatureSlug,
+			&i.ZulipTopic,
+			&i.ProjectSlug,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

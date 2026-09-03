@@ -12,6 +12,172 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const costByFeature = `-- name: CostByFeature :many
+SELECT f.id AS feature_id, f.slug AS feature_slug, p.slug AS project_slug,
+       sum(r.cost_usd)::numeric AS cost_usd,
+       sum(r.tokens_in)::bigint AS tokens_in,
+       sum(r.tokens_out)::bigint AS tokens_out,
+       count(*)::bigint AS runs
+FROM run r
+JOIN task t ON t.id = r.task_id
+JOIN feature f ON f.id = t.feature_id
+JOIN project p ON p.id = f.project_id
+GROUP BY f.id, f.slug, p.slug
+ORDER BY cost_usd DESC
+`
+
+type CostByFeatureRow struct {
+	FeatureID   uuid.UUID      `json:"feature_id"`
+	FeatureSlug string         `json:"feature_slug"`
+	ProjectSlug string         `json:"project_slug"`
+	CostUsd     pgtype.Numeric `json:"cost_usd"`
+	TokensIn    int64          `json:"tokens_in"`
+	TokensOut   int64          `json:"tokens_out"`
+	Runs        int64          `json:"runs"`
+}
+
+// GET /v1/metrics/cost (M7, development-plan.md §11 "cost per merged PR" and
+// the cost dashboard's feature breakdown). Grouped over every run ever
+// created, not just active ones — a dashboard, not a live-run view.
+func (q *Queries) CostByFeature(ctx context.Context) ([]CostByFeatureRow, error) {
+	rows, err := q.db.Query(ctx, costByFeature)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CostByFeatureRow
+	for rows.Next() {
+		var i CostByFeatureRow
+		if err := rows.Scan(
+			&i.FeatureID,
+			&i.FeatureSlug,
+			&i.ProjectSlug,
+			&i.CostUsd,
+			&i.TokensIn,
+			&i.TokensOut,
+			&i.Runs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const costByModel = `-- name: CostByModel :many
+SELECT r.model,
+       sum(r.cost_usd)::numeric AS cost_usd,
+       sum(r.tokens_in)::bigint AS tokens_in,
+       sum(r.tokens_out)::bigint AS tokens_out,
+       count(*)::bigint AS runs
+FROM run r
+GROUP BY r.model
+ORDER BY cost_usd DESC
+`
+
+type CostByModelRow struct {
+	Model     string         `json:"model"`
+	CostUsd   pgtype.Numeric `json:"cost_usd"`
+	TokensIn  int64          `json:"tokens_in"`
+	TokensOut int64          `json:"tokens_out"`
+	Runs      int64          `json:"runs"`
+}
+
+// GET /v1/metrics/cost's model breakdown.
+func (q *Queries) CostByModel(ctx context.Context) ([]CostByModelRow, error) {
+	rows, err := q.db.Query(ctx, costByModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CostByModelRow
+	for rows.Next() {
+		var i CostByModelRow
+		if err := rows.Scan(
+			&i.Model,
+			&i.CostUsd,
+			&i.TokensIn,
+			&i.TokensOut,
+			&i.Runs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const costByRole = `-- name: CostByRole :many
+SELECT r.role,
+       sum(r.cost_usd)::numeric AS cost_usd,
+       sum(r.tokens_in)::bigint AS tokens_in,
+       sum(r.tokens_out)::bigint AS tokens_out,
+       count(*)::bigint AS runs
+FROM run r
+GROUP BY r.role
+ORDER BY cost_usd DESC
+`
+
+type CostByRoleRow struct {
+	Role      string         `json:"role"`
+	CostUsd   pgtype.Numeric `json:"cost_usd"`
+	TokensIn  int64          `json:"tokens_in"`
+	TokensOut int64          `json:"tokens_out"`
+	Runs      int64          `json:"runs"`
+}
+
+// GET /v1/metrics/cost's role breakdown — D15's reviewer-vs-implementer
+// model-family split shows up here as two very different cost profiles.
+func (q *Queries) CostByRole(ctx context.Context) ([]CostByRoleRow, error) {
+	rows, err := q.db.Query(ctx, costByRole)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CostByRoleRow
+	for rows.Next() {
+		var i CostByRoleRow
+		if err := rows.Scan(
+			&i.Role,
+			&i.CostUsd,
+			&i.TokensIn,
+			&i.TokensOut,
+			&i.Runs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countDoneTasksWithArtifact = `-- name: CountDoneTasksWithArtifact :one
+SELECT count(DISTINCT t.id)::bigint
+FROM task t
+JOIN artifact a ON a.task_id = t.id
+WHERE t.state = 'DONE'
+`
+
+// §11 "cost per merged PR — the only cost number that means anything":
+// the denominator. A DONE task with at least one artifact is the closest
+// proxy this schema has to "merged PR" without a control-plane call to
+// api.github.com.
+func (q *Queries) CountDoneTasksWithArtifact(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countDoneTasksWithArtifact)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getActiveRunForTask = `-- name: GetActiveRunForTask :one
 SELECT id, task_id, parent_run_id, role, model, container_id, dsh_session_id, state, checkpoint, started_at, ended_at, tokens_in, tokens_out, cost_usd, created_at, version, updated_at, next_event_seq, token_hash, last_heartbeat_at, attempt, exit_code, prompt_version FROM run WHERE task_id = $1 AND state IN ('PENDING', 'STARTING', 'RUNNING')
 `
@@ -591,6 +757,18 @@ type SetRunPromptVersionParams struct {
 func (q *Queries) SetRunPromptVersion(ctx context.Context, arg SetRunPromptVersionParams) error {
 	_, err := q.db.Exec(ctx, setRunPromptVersion, arg.ID, arg.PromptVersion)
 	return err
+}
+
+const totalCostUSD = `-- name: TotalCostUSD :one
+SELECT COALESCE(sum(cost_usd), 0)::numeric FROM run
+`
+
+// GET /v1/metrics/cost's total, and the numerator of §11's cost-per-merged-PR.
+func (q *Queries) TotalCostUSD(ctx context.Context) (pgtype.Numeric, error) {
+	row := q.db.QueryRow(ctx, totalCostUSD)
+	var column_1 pgtype.Numeric
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const touchRunHeartbeat = `-- name: TouchRunHeartbeat :exec

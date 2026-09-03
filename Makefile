@@ -1,7 +1,7 @@
 COMPOSE := podman compose -f deploy/compose.yaml
 DATABASE_URL ?= postgres://agentfleet:agentfleet@localhost:5433/agentfleet?sslmode=disable
 
-.PHONY: up down logs build test check migrate-up migrate-down lint sqlc test-integration e2e runner-image egress-ca
+.PHONY: up down logs build test check migrate-up migrate-down lint sqlc test-integration e2e runner-image egress-ca webapp
 
 up:
 	$(COMPOSE) up -d --build
@@ -12,6 +12,12 @@ up:
 # image-not-found error rather than an implicit pull.
 runner-image:
 	podman build -f deploy/runner.Dockerfile -t agentfleet-runner .
+
+# M7: the webapp is a static build caddy serves (deploy/compose.yaml mounts
+# webapp/dist read-only) rather than its own compose service — build it once
+# before `make up`, same convention as runner-image above.
+webapp:
+	cd webapp && npm ci && npm run build
 
 # One-time bootstrap (development-plan.md §8 step 8, before step 10's
 # runner-image build): mitmproxy generates its CA the first time it starts.

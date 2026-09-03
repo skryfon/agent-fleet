@@ -1,10 +1,12 @@
 # Local development subset of development-plan.md §8's compose topology.
 # Zulip is Zulip Cloud (hosted), not a local service — see
 # docs/adr/0004-zulip-as-primary-human-channel.md and deploy/zulip/README.md.
-# Langfuse is deliberately deferred to M7: nothing emits traces before M1, and
-# Langfuse v3 needs ClickHouse + Redis + MinIO for an empty database — not
-# worth running from M0. bridge, webapp, egress-proxy join as their
-# milestones land.
+# Langfuse was considered for M7 and dropped, not deferred again: the
+# append-only `event` table (D1) already is the trace store and
+# GET /v1/events already answers what Langfuse would, while Langfuse v3
+# needs ClickHouse + Redis + MinIO on what is otherwise a single-machine
+# deployment. bridge, egress-proxy joined at their milestones; webapp joined
+# at M7 as a static build served by caddy, not its own service.
 # Run with Podman (D11): `podman compose -f deploy/compose.yaml up`.
 #
 # Before `make up`: build the runner image once (`make runner-image`) — the
@@ -161,6 +163,9 @@ services:
     networks: [edge, core]
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # M7: the webapp's static build (`make webapp`, run once — same
+      # "build before `make up`" convention as runner-image below).
+      - ../webapp/dist:/srv/webapp:ro
     ports:
       - "127.0.0.1:8081:80"
     depends_on:
@@ -205,8 +210,6 @@ services:
     networks: [runners, egress]
     volumes:
       - ./egress-proxy/ca:/home/mitmproxy/.mitmproxy:z
-
-  # webapp:        [edge, core] — M7
 
 volumes:
   agentfleet-postgres:

@@ -76,3 +76,17 @@ SELECT count(*) FROM event WHERE kind = 'deviation';
 -- name: CountAllTasks :one
 -- §11's drift-rate metric denominator: "deviations reported per task."
 SELECT count(*) FROM task;
+
+-- name: CountPolicyViolations :one
+-- §11's "policy violations — should trend to zero", read straight off the
+-- append-only log like CountDeviationEvents above it. No counter column.
+SELECT count(*) FROM event WHERE kind = 'policy_violation';
+
+-- name: QuestionRate :one
+-- §11's "question rate per run and feature". to_run_id IS NULL restricts this
+-- to HUMAN-facing asks — D7's ask_orchestrator questions are agent-to-agent
+-- routing, not the "planning underperformed" signal this metric is for.
+SELECT
+  (SELECT count(*) FROM question WHERE to_run_id IS NULL)::bigint AS questions,
+  (SELECT count(*) FROM run)::bigint     AS runs,
+  (SELECT count(*) FROM feature)::bigint AS features;

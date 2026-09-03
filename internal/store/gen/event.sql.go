@@ -94,6 +94,19 @@ func (q *Queries) CountDeviationEvents(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countPolicyViolations = `-- name: CountPolicyViolations :one
+SELECT count(*) FROM event WHERE kind = 'policy_violation'
+`
+
+// §11's "policy violations — should trend to zero", read straight off the
+// append-only log like CountDeviationEvents above it. No counter column.
+func (q *Queries) CountPolicyViolations(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPolicyViolations)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertControlPlaneEvent = `-- name: InsertControlPlaneEvent :one
 INSERT INTO event (run_id, task_id, seq, kind, actor, payload, source, dedupe_key)
 VALUES ($1, $2, $3, $4, $5, $6, 'control_plane', $7)
@@ -247,4 +260,27 @@ func (q *Queries) MirrorHighWaterSeq(ctx context.Context, runID uuid.UUID) (int6
 	var high_water_seq int64
 	err := row.Scan(&high_water_seq)
 	return high_water_seq, err
+}
+
+const questionRate = `-- name: QuestionRate :one
+SELECT
+  (SELECT count(*) FROM question WHERE to_run_id IS NULL)::bigint AS questions,
+  (SELECT count(*) FROM run)::bigint     AS runs,
+  (SELECT count(*) FROM feature)::bigint AS features
+`
+
+type QuestionRateRow struct {
+	Questions int64 `json:"questions"`
+	Runs      int64 `json:"runs"`
+	Features  int64 `json:"features"`
+}
+
+// §11's "question rate per run and feature". to_run_id IS NULL restricts this
+// to HUMAN-facing asks — D7's ask_orchestrator questions are agent-to-agent
+// routing, not the "planning underperformed" signal this metric is for.
+func (q *Queries) QuestionRate(ctx context.Context) (QuestionRateRow, error) {
+	row := q.db.QueryRow(ctx, questionRate)
+	var i QuestionRateRow
+	err := row.Scan(&i.Questions, &i.Runs, &i.Features)
+	return i, err
 }
