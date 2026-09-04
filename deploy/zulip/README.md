@@ -123,8 +123,9 @@ Every human and bot that will interact through Zulip needs a row in the
 `af-ask-human` (M3) address messages to a role and verify a reply's sender
 against a known identity — "unmapped senders are ignored and logged" (§6).
 
-No API for this yet (`internal/api` is unimplemented until M2) — insert rows
-directly via `psql` for now:
+No write API for identity rows (`internal/api` only exposes
+`GET /v1/identities/by-zulip/{id}`, a read) — insert rows directly via `psql`
+for now:
 
 ```sql
 insert into identity (kind, display_name, zulip_user_id, github_login, role)

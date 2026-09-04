@@ -67,6 +67,13 @@ type LaunchRequest struct {
 	// writes it to a tmpfs file and passes `--patch <file>`. Empty for a
 	// project with no manifest or a role the manifest doesn't declare.
 	Patch string `json:"patch,omitempty"`
+	// SpecRefs is the task's spec_refs column (D8), verbatim JSON —
+	// task.SpecRefs as read by GetLaunchContext. af-context (runner/packages/
+	// af-context) resolves each {path, anchor, sha256} against the worktree
+	// and rejects the step on mismatch; this handler never reads the bytes
+	// it points at, only carries the reference. Empty ("[]" or "") for a
+	// task with no spec_refs.
+	SpecRefs string `json:"spec_refs,omitempty"`
 }
 
 // KillRequest is the daemon's POST /kill body.

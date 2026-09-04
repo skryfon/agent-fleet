@@ -6,10 +6,15 @@ Self-hosted agentic SDLC framework. Full design: [`development-plan.md`](develop
 **Status: M0–M6 done** (see `development-plan.md` §7 for the milestone
 sequence and `docs/adr/` for the 17 locked decisions each milestone builds
 on). The control plane, supervisor, Zulip bridge, policy/approval/budget
-plumbing, orchestration (`af-subagent`, drift metric), and the manifest
-compiler for multi-project support are all live. **M7 (web app) and M8
-(planning ingestion) remain** — `webapp/` is still an empty scaffold; `dsh
-web` covers live-run viewing in the meantime.
+plumbing (including `af-context`'s D8 hash-pinned spec_ref enforcement),
+orchestration (`af-subagent`, drift metric), and the manifest compiler for
+multi-project support are all live. `webapp/` (approval queue, live run view
+over SSE, cost/metrics dashboards) is built (M7's deliverables exist) but
+**M7's own done-condition — "the team keeps the live view open during a
+working day" — hasn't happened yet**, so M7 isn't claimed as done. **M8
+(planning ingestion) remains** — deferred until M1–M7 have run in daily use
+for a month (`development-plan.md` §7). `dsh web` remains available as a
+free supplementary debug view over individual sessions.
 
 ## How it works
 
@@ -79,21 +84,20 @@ status and `pnpm typecheck`/`pnpm build`/`npx vitest run` from `runner/`.
 Before editing an `af-*` package, work through
 [`docs/cordis-ramp.md`](docs/cordis-ramp.md) and the `dsh-plugin-dev` skill.
 
-## What's next (M7–M8)
+## What's next (M8)
 
-`webapp/` (approval queue, live run view, cost dashboards) hasn't been
-scaffolded — it depends on the `/v1/events` SSE and `/v1/approvals` endpoints,
-which already exist, so M7 can start. M8 (moving Spec Kit into the harness
-for headless planning) is explicitly deferred until M1–M7 have run in daily
-use for a month (`development-plan.md` §7).
+M8 (moving Spec Kit into the harness for headless planning) is explicitly
+deferred until M1–M7 have run in daily use for a month
+(`development-plan.md` §7).
 
 ## Repo layout
 
 See `development-plan.md` §2. Short version: `cmd/` + `internal/` (Go
 control plane, supervisor, bridge — policy, budget, outbox, fanout, podman,
 redact, questions, store all implemented), `runner/` (dsh profile + `af-*`
-plugins), `webapp/` (approval queue + dashboards, not yet scaffolded — M7),
-`deploy/` (compose, migrations, Dockerfiles, Zulip Cloud setup docs),
+plugins), `webapp/` (approval queue, live run view, cost/metrics dashboards
+— implemented, M7), `deploy/` (compose, migrations, Dockerfiles, Zulip Cloud
+setup docs),
 `deepseek-harness/` (vendored `dsh`, pinned submodule), `docs/adr/` (18
 files, one per locked decision plus the README), `docs/diagrams/` (workflow
 diagram), `docs/upgrade-drills/` (dsh version-bump records).

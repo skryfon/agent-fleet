@@ -85,7 +85,9 @@ node "$bin" plugin --profile agentfleet-runner add \
   "link:$repo_root/runner/packages/af-ask-human" \
   "link:$repo_root/runner/packages/af-resume" \
   "link:$repo_root/runner/packages/af-budget" \
-  "link:$repo_root/runner/packages/af-subagent" >&2
+  "link:$repo_root/runner/packages/af-subagent" \
+  "link:$repo_root/runner/packages/af-context" \
+  "link:$repo_root/runner/packages/af-webhook" >&2
 
 mkdir -p "$scratch/target-repo"
 
@@ -111,9 +113,10 @@ output="$(cd "$scratch/target-repo" && node "$bin" "${dump_args[@]}")"
 output="${output//$scratch/<SCRATCH>}"
 
 # Every af-* row must be present, and no Cordis fiber may sit PENDING
-# (the CLAUDE.md composition smoke test). af-webhook joins the plugin add
-# list above the day it un-stubs (development-plan.md M6) — until then its
-# row resolves via the bundle patch alone, same as af-context's.
+# (the CLAUDE.md composition smoke test). af-webhook is disabled in the
+# bundle patch — deliberately deferred, optional per development-plan.md §7
+# M6 — but its package is real enough now (tsconfig, built lib/) to link and
+# compose here, catching a load failure even while it stays off.
 for id in af-control af-context af-worktree af-github af-policy af-ask-human af-resume af-budget af-subagent af-webhook; do
   grep -q "^- id: $id\$" <<<"$output" || { echo "dump-config.sh: missing af-* row: $id" >&2; exit 1; }
 done

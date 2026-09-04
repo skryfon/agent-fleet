@@ -23,7 +23,7 @@ headless runner bundle. Where they diverged, this version picks explicitly:
 |---|---|---|
 | Container runtime | **Podman**, no socket-proxy | Rootless/daemonless by default — no host-wide privileged daemon to front with a proxy sidecar. Retained from the original locked D11 rather than reverting to Docker + `docker-socket-proxy`. |
 | Human channel | **Zulip from M0/M3**, not deferred | Zulip is the team's actual working surface (D4), not a placeholder to be upgraded later. `dsh web` is still used for free as an internal debug view, but is not a milestone deliverable. |
-| Runner internals | `dsh-headless` bundle + eight granular `af-*` plugins (`af-control`, `af-policy`, `af-context`, `af-ask-human`, `af-budget`, `af-worktree`, `af-github`, `af-subagent`) | Reuses dsh's shipped one-shot runner instead of hand-building boot/exit logic; splits responsibilities along dsh's own extension points (`tools/pre-execute`, `agent/pre-step`, `agent/turn-stopping`, subagent provider) rather than one monolithic boot plugin. |
+| Runner internals | `dsh-headless` bundle + nine granular `af-*` plugins (`af-control`, `af-policy`, `af-context`, `af-ask-human`, `af-budget`, `af-worktree`, `af-github`, `af-resume`, `af-subagent`) | Reuses dsh's shipped one-shot runner instead of hand-building boot/exit logic; splits responsibilities along dsh's own extension points (`tools/pre-execute`, `agent/pre-step`, `agent/turn-stopping`, subagent provider) rather than one monolithic boot plugin. `af-resume` (M3) was added after the original eight-plugin split to own the resurrect-and-resume boot path, mutually exclusive with `dsh-headless`'s own. |
 | Manifest mechanism | `.agentfleet/project.yaml` **compiles to a generated `dsh --patch` overlay**, snapshot-tested | Concrete, testable mechanism for D9-style "role determines tool access" instead of leaving it implicit in preset composition. |
 | Postgres/session-log relationship | Postgres mirrors durable `dsh` session events **idempotently and one-way**; the dsh session log stays the byte-authoritative source within a run | Gives cross-run audit/search in Postgres without inventing a second source of truth. The mirror is derived data, never the thing replayed from. |
 | Extra governance | Added: model-family diversity for reviewers (D14), a mid-plan upgrade drill (M4.5), a community-plugin policy (§9) | None of these existed in the first draft; both are cheap and address real risks (shared model blind spots, alpha-dependency upgrade cost, unvetted third-party plugin code running with credentials). |
@@ -50,6 +50,8 @@ headless runner bundle. Where they diverged, this version picks explicitly:
 | D13 | **The control plane never imports a dsh type.** All contact is the HTTP API in §4. |
 | D14 | **Everything AgentFleet-specific in dsh lives in our own bundle.** Patching a `dsh-base` config row by id requires architect sign-off and a written justification. |
 | D15 | **Reviewer agents use a different model family from implementer agents.** Shared blind spots between reviewer and implementer defeat the point of review. |
+| D16 | **The egress proxy terminates TLS to filter the merge endpoint by path.** Layer 4 of D3's four-layer merge prevention — `docs/adr/0016-egress-proxy-terminates-tls.md` (M4). |
+| D17 | **`.agentfleet/project.yaml` compiles to a generated, per-run dsh `--patch` overlay.** `docs/adr/0017-manifest-compiles-to-a-dsh-patch.md` (M6). |
 
 D12–D14 exist together. D12 without D13 and D14 is how a developer-preview dependency
 becomes unupgradeable.
@@ -111,6 +113,7 @@ agentfleet/                      # monorepo
 │   ├── packages/af-budget/
 │   ├── packages/af-worktree/
 │   ├── packages/af-github/
+│   ├── packages/af-resume/       # M3, resurrect-and-resume boot path
 │   ├── packages/af-subagent/
 │   ├── packages/af-webhook/      # optional, M6+
 │   └── bundle/                  # dsh-bundle-agentfleet
@@ -214,6 +217,7 @@ so AgentFleet plugins never reimplement that lifecycle.
 | `af-budget` | telemetry + `agent/turn-stopping` | Token/cost/minute caps; stops the turn on breach |
 | `af-worktree` | `ctx.fs`, `ctx.subprocess` | Confines all IO to `/workspace/<run-id>` |
 | `af-github` | `ctx.tools` | Branch, commit, push, PR via `gh`. **No merge tool exists.** |
+| `af-resume` | boot (mutually exclusive with `dsh-headless`'s own boot) | Resurrect-and-resume: resumes `AF_RESUME_SESSION_ID` and delivers the answer instead of a fresh `dsh-headless` create-and-followup launch (M3) |
 | `af-subagent` | subagent provider | `spawn_worker` routes through the control plane |
 | `af-webhook` *(optional, M6+)* | `ctx.webhookRuntime` | Auto-starts a read-only review session on GitHub `ready_for_review`, modeled on dsh's own `github-review` example |
 
@@ -520,7 +524,7 @@ short-lived token, no socket, allowlisted egress, cannot merge.
 | Architect A | Domain model, state machine, policy engine, ADRs |
 | Architect B | Spec Kit preset, `tasks.md` contract, role prompts, model allocation |
 | Developer 1 | control-plane, store, supervisor |
-| Developer 2 | **dsh bundle** (all eight core `af-*` plugins plus `af-webhook`), Zulip bridge |
+| Developer 2 | **dsh bundle** (all nine core `af-*` plugins, `af-resume` included, plus `af-webhook`), Zulip bridge |
 | DevOps | Compose (Podman), egress proxy, secrets, backups, branch protection, CI |
 | Designer | Approval queue, live run view, run timeline |
 

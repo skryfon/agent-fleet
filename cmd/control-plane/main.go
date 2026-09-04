@@ -119,13 +119,11 @@ func run(log *slog.Logger) error {
 		// process-wide Manifest with one resolved per-project — see
 		// internal/api.Server.Manifest's doc comment. Every role but
 		// orchestrator/implementer still denies every mediated tool
-		// (fail-closed). D7 (docs/adr/0007) says only the orchestrator
-		// should get ask_human — but DefaultRole below is "implementer"
-		// (no orchestrator role exists until M5), so a real launched run
-		// would 403 on ask_human without this grant.
-		// TODO(M5): drop "implementer" once an orchestrator role actually
-		// launches runs; this is a manual-testing accommodation, not D7
-		// policy.
+		// (fail-closed). D7 (docs/adr/0007) says only the orchestrator gets
+		// ask_human: DefaultRole below is "implementer" for a project with
+		// no manifest (or one naming more than one agent), and its
+		// MediatedTools list deliberately omits ask_human — see the M5
+		// comment on that row.
 		Manifest: policy.Manifest{
 			Roles: map[string]policy.Role{
 				// M5: orchestrator gains spawn_worker (fan-out) and

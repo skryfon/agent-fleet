@@ -12,17 +12,30 @@ before editing any `af-*` package.
 - `bundle/` — `dsh-bundle-agentfleet`, the patch that stacks the `af-*`
   plugins into a profile.
 
-## Status: M4.5 done
+## Status: M0–M6 done
 
 M1's done-conditions (kill criterion + first PR, both proven live against
 `sarathkumarps17/agentfleet-m1-scratch`) still hold — see git history for the
 original writeup. Since then: M2 (`af-control` mirrors `session/event` to the
 control plane), M3 (`af-ask-human`/`af-resume`, checkpoint-and-exit), M4
 (`af-policy` four-layer merge prevention incl. the egress proxy, `af-budget`
-live with a real cap), and M4.5 (the dsh upgrade drill below) all landed.
-Every `af-*` package here is active in `bundle/cordis.patch.yml` except
-`af-context` (still a comment-only M2+ stub) and `af-subagent`/`af-webhook`
-(M5/M6).
+live with a real usd/minutes/questions cap), M4.5 (the dsh upgrade drill
+below), M5 (`af-subagent`'s `spawn_worker`/`ask_orchestrator`/subtree
+cancellation), and M6 (the manifest compiler, `af-context`'s D8 hash-pinned
+`spec_refs` enforcement) all landed. Every `af-*` package here is active in
+`bundle/cordis.patch.yml` except `af-webhook`, which stays `disabled: true`
+— development-plan.md §7 calls it optional for M6, so M6 is complete without
+it.
+
+`af-context` (`packages/af-context/src/index.ts`) verifies each task's
+`spec_refs` — `{path, anchor, sha256}`, carried from the task row to the
+container as `AF_SPEC_REFS` — against the worktree on `agent/pre-step`, and
+rejects the step on a mismatch. An anchor's semantics aren't specified by the
+plan; this package treats it as a markdown heading slug (GitHub's own
+heading-to-slug rule) and hashes from that heading through the line before
+the next heading of equal-or-higher level. No anchor hashes the whole file.
+No `AF_SPEC_REFS`/`AGENTFLEET_WORKTREE_DIR` (a bare host run, or a task with
+no spec_refs) is a no-op, same fallback shape as `af-worktree`'s own config.
 
 ### Upgrading dsh
 
@@ -92,15 +105,16 @@ node ../deepseek-harness/apps/cli/lib/bin.js --profile agentfleet-runner "<task>
 `apps/cli/lib/bin.js` is dsh's own already-built artifact in the vendored
 checkout — no `pnpm run build` needed there.
 
-## What's next (M5)
+## What's next (M7/M8)
 
-- `af-subagent`: `spawn_worker` with depth/fan-out limits, `ask_orchestrator`
-  routing, subtree cancellation (development-plan.md §M5).
-- `af-context`: resolve hash-pinned `spec_refs` on `agent/pre-step` — still a
-  comment-only stub.
-- development-plan.md itself notes stop-after-M4.5 is a legitimate outcome;
-  M5 is additional orchestration on top of a system that already has real
-  safety rails.
+- `af-webhook`: auto-start a read-only review session on GitHub
+  `ready_for_review`, modeled on dsh's own `github-review` example —
+  optional per development-plan.md §7 M6, still a comment-only stub,
+  packaged (tsconfig, real `lib/` build) but disabled.
+- M7's web app (`webapp/`) is built, but its done-condition — daily use —
+  hasn't happened yet.
+- M8 (planning ingestion): development-plan.md says not to start until
+  M1–M7 have been in daily use for a month.
 
 See `~/.claude/plans/objective-implement-the-m1-calm-swing.md` for the
 original M1 plan and the OmniRoute wiring writeup.

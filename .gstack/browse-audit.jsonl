@@ -1,0 +1,21 @@
+{"ts":"2026-09-03T14:14:54.404Z","cmd":"goto","args":"http://localhost:5173","origin":"http://localhost:5173/","durationMs":645,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:14:54.507Z","cmd":"text","args":"","origin":"http://localhost:5173/","durationMs":3,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:14:59.247Z","cmd":"snapshot","args":"-i","origin":"http://localhost:5173/","durationMs":17,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:15:03.555Z","cmd":"fill","args":"@e1 smoke-test-token","origin":"http://localhost:5173/","durationMs":31,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:15:03.617Z","cmd":"click","args":"@e2","origin":"http://localhost:5173/","durationMs":30,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:15:03.652Z","cmd":"text","args":"","origin":"http://localhost:5173/","durationMs":0,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:04.853Z","cmd":"reload","args":"","origin":"http://localhost:5173/","durationMs":119,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:05.927Z","cmd":"text","args":"","origin":"http://localhost:5173/","durationMs":4,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:13.974Z","cmd":"snapshot","args":"-i -d 3","origin":"http://localhost:5173/","durationMs":77,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:18.858Z","cmd":"click","args":"@e1","origin":"http://localhost:5173/","durationMs":566,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:18.921Z","cmd":"text","args":"","origin":"http://localhost:5173/","durationMs":1,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:25.830Z","cmd":"snapshot","args":"-i -d 2","origin":"http://localhost:5173/","durationMs":5,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:30.126Z","cmd":"click","args":"@e3","origin":"http://localhost:5173/","durationMs":29,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:30.169Z","cmd":"text","args":"","origin":"http://localhost:5173/","durationMs":2,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:37.280Z","cmd":"snapshot","args":"-i -d 2","origin":"http://localhost:5173/","durationMs":26,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:41.411Z","cmd":"click","args":"@e4","origin":"http://localhost:5173/","durationMs":33,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:41.613Z","cmd":"text","args":"","origin":"http://localhost:5173/","durationMs":1,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:42.188Z","cmd":"screenshot","args":"/tmp/m7-metrics.png","origin":"http://localhost:5173/","durationMs":518,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:49.728Z","cmd":"snapshot","args":"-i -d 2","origin":"http://localhost:5173/","durationMs":2,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:54.859Z","cmd":"click","args":"@e2","origin":"http://localhost:5173/","durationMs":36,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-09-03T14:16:55.270Z","cmd":"screenshot","args":"/tmp/m7-live.png","origin":"http://localhost:5173/","durationMs":375,"status":"ok","hasCookies":false,"mode":"launched"}

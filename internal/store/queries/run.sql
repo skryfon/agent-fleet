@@ -79,8 +79,10 @@ RETURNING *;
 -- parent_run_id (CancelSubtree's walk key) and role without a second query
 -- — and (M6) the project's slug (per-project GH_TOKEN_<SLUG> resolution)
 -- and compiled manifest (role/model/prompt/tool-policy/budget resolution).
+-- t.spec_refs (D8) is handed to the runner as AF_SPEC_REFS, verbatim JSON —
+-- af-context resolves it against the worktree, never this handler.
 SELECT
-    t.id AS task_id, t.title, t.intent, t.acceptance_criteria,
+    t.id AS task_id, t.title, t.intent, t.acceptance_criteria, t.spec_refs,
     t.parent_run_id, t.role,
     p.repos[1]::text AS repo_url,
     p.slug AS project_slug, p.manifest AS project_manifest

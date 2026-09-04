@@ -121,6 +121,7 @@ type launchRequest struct {
 	Answer          string `json:"answer,omitempty"`
 	ProjectSlug     string `json:"project_slug,omitempty"`
 	Patch           string `json:"patch,omitempty"`
+	SpecRefs        string `json:"spec_refs,omitempty"`
 }
 
 func (d *daemon) launch(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +275,14 @@ func (d *daemon) spec(req launchRequest) podman.Spec {
 	// --profile agentfleet-runner. Empty for a manifest-less project.
 	if req.Patch != "" {
 		env["AF_PATCH"] = req.Patch
+	}
+
+	// AF_SPEC_REFS (D8): af-context (runner/packages/af-context) resolves
+	// each {path, anchor, sha256} against the worktree on agent/pre-step.
+	// Unset for a task with no spec_refs — af-context no-ops, same as
+	// af-worktree's own baseRepoDir/worktreeDir-unset fallback.
+	if req.SpecRefs != "" {
+		env["AF_SPEC_REFS"] = req.SpecRefs
 	}
 
 	// M4 layer 4 (development-plan.md §8): every outbound call from inside

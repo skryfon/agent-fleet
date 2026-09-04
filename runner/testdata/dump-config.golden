@@ -365,7 +365,9 @@
     runToken: !!js process.env.AF_RUN_TOKEN
 - id: af-context
   name: '@agentfleet/af-context'
-  disabled: true
+  config:
+    specRefs: !!js process.env.AF_SPEC_REFS
+    worktreeDir: !!js process.env.AGENTFLEET_WORKTREE_DIR
 - id: af-worktree
   name: '@agentfleet/af-worktree'
   config:
@@ -386,8 +388,9 @@
 - id: af-budget
   name: '@agentfleet/af-budget'
   config:
-    usdPerMillionTokens:
-      '[object Object]': undefined
+    usdPerMillionTokens: !!js >-
+      process.env.AF_BUDGET_USD_PER_MILLION_TOKENS ?
+      Number(process.env.AF_BUDGET_USD_PER_MILLION_TOKENS) : undefined
 - id: af-subagent
   name: '@agentfleet/af-subagent'
 - id: af-webhook

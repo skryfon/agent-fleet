@@ -50,6 +50,14 @@ export interface Config {
 const DEFAULT_USD_PER_MILLION_TOKENS = 3
 const DEFAULT_REPORT_INTERVAL_MS = 60_000
 
+// Pure so a config-plumbing regression (e.g. usdPerMillionTokens arriving as
+// an object instead of a number — see runner/bundle/cordis.patch.yml's head
+// comment on its own past bug) shows up as a failing assertion here instead
+// of a silently-never-firing USD cap.
+export function costUSD(deltaTokens: number, usdPerMillionTokens: number): number {
+  return (deltaTokens / 1_000_000) * usdPerMillionTokens
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
   const usdPerMillionTokens = config.usdPerMillionTokens ?? DEFAULT_USD_PER_MILLION_TOKENS
   const reportIntervalMs = config.reportIntervalMs ?? DEFAULT_REPORT_INTERVAL_MS
@@ -82,7 +90,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     try {
       const result = await client.postUsage({
         tokens_in: deltaTokens, tokens_out: 0,
-        cost_usd: (deltaTokens / 1_000_000) * usdPerMillionTokens,
+        cost_usd: costUSD(deltaTokens, usdPerMillionTokens),
         minutes,
       })
 

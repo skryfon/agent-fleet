@@ -183,6 +183,16 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 		promptText = text
 	}
 
+	// specRefs (D8) is handed to the runner verbatim — af-context resolves
+	// it, this handler doesn't. "[]" (the column's default; see 0001_init's
+	// spec_refs jsonb NOT NULL DEFAULT '[]') is normalized to "" so
+	// af-context's own AF_SPEC_REFS-unset no-op path covers it too, same as
+	// an omitted spec_refs entirely.
+	specRefs := string(launchCtx.SpecRefs)
+	if specRefs == "[]" {
+		specRefs = ""
+	}
+
 	var patch string
 
 	if hasManifestAgent {
@@ -284,6 +294,7 @@ func (h *Handlers) RunLaunch(ctx context.Context, m outbox.Message) error {
 		Answer:          answer,
 		ProjectSlug:     launchCtx.ProjectSlug,
 		Patch:           patch,
+		SpecRefs:        specRefs,
 	}); err != nil {
 		return fmt.Errorf("run.launch: daemon launch for run %s: %w", run.ID, err)
 	}
